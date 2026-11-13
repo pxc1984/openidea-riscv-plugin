@@ -16,6 +16,14 @@ In Settings → Plugins → Install Plugin from Disk, select this plugin's folde
 
 ## Use
 
+While editing, the plugin works without the helper:
+
+- **Live diagnostics.** The simulator's assembler checks the unsaved buffer: unknown instructions (with a "did you mean" hint), wrong operand counts, undefined labels and missing `1f`/`1b` local labels, plus a warning when a result is written to `zero`.
+- **Hover.** Instructions show their operand syntax and meaning, registers their `xN`/`fN` number and calling-convention role, numbers their decimal/hex/binary values, and labels where they are defined (with the C signature for functions).
+- **Completion by position.** Mnemonics and directives at the start of a statement; at an operand, registers (integer or float to match the operand) and the file's labels and `.equ` constants, with labels first where a branch or call target is expected and `sp` first inside `offset(`. Snippets add an exported function and an exit `ecall`.
+- **Operand help** names the operand being typed, e.g. `sd rs2, offset(rs1)`.
+- **Navigation.** Go to Declaration on a label, constant or `1b`/`1f` reference; occurrences of the label or register under the caret are highlighted, with writes to registers marked. Functions fold.
+
 Open an assembly file and invoke **RISC-V: Run File or Function** from Find Action, the editor toolbar or its context menu. Choose **Run program** for the automatic `_start` / `main` entry, or choose a function. Gutter buttons run the function on their line.
 
 A preceding C signature comment, such as `# int64_t sum(int64_t a, int64_t b)`, names the arguments and enforces their count. Arguments accept decimal, hexadecimal, binary and octal 64-bit integers, are remembered per file/function, and are passed as separate argv entries. Dismissing either prompt cancels the run.

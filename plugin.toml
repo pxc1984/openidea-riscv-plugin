@@ -32,7 +32,15 @@ menu = "editor.title"
 command = "run"
 
 [[contributes.providers]]
-kinds = ["completion", "gutter-actions"]
+kinds = [
+  "completion",
+  "definition",
+  "hover",
+  "diagnostics",
+  "signature-help",
+  "document-highlights",
+  "gutter-actions",
+]
 languages = ["riscv"]
 
 [[contributes.runConfigurations]]

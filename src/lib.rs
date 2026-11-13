@@ -1,11 +1,20 @@
+mod docs;
+mod editor;
 mod language;
 
-use language::{functions, highlights};
-use openidea_plugin::language_features::{Document, GutterAction, LanguageFeatures};
+use editor::Context;
+use language::{blank_comments, functions, highlights};
+use openidea_plugin::diagnostics::DiagnosticsProvider;
+use openidea_plugin::hover::{Hover, HoverProvider};
+use openidea_plugin::language_features::{
+    Document, GutterAction, Highlight as Occurrence, LanguageFeatures, Parameter, ParameterLabel, Signature,
+    SignatureHelp,
+};
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Providers};
-use openidea_plugin::syntax::{Fold, Symbol, SymbolKind, SyntaxProvider, Token};
+use openidea_plugin::syntax::{Fold, FoldKind, Symbol, SymbolKind, SyntaxProvider, Token};
 use openidea_plugin::{
-    Error, Invocation, PickItem, Plugin, PluginRunConfiguration, RunConfigurations, host, register_plugin,
+    Diagnostic, Error, Invocation, Location, PickItem, Plugin, PluginRunConfiguration, Position, RunConfigurations,
+    host, register_plugin, text,
 };
 
 #[derive(Default)]
@@ -57,7 +66,11 @@ impl Plugin for Riscv {
             Some(found.iter().find(|f| f.name == name).ok_or_else(|| Error::NotFound(name.into()))?)
         } else {
             let items: Vec<_> = std::iter::once(PickItem::new("", "Run program"))
-                .chain(found.iter().map(|f| PickItem::new(&f.name, &format!("{}()", f.name))))
+                .chain(found.iter().map(|f| {
+                    let signature = f.parameters.as_ref().map_or(String::new(), |p| p.join(", "));
+                    PickItem::new(&f.name, &format!("{}({signature})", f.name))
+                        .description(&format!("line {}", f.line + 1))
+                }))
                 .collect();
             let Some(name) = host::pick("RISC-V: Run File or Function", &items)? else {
                 return Ok(None);
@@ -141,29 +154,209 @@ impl SyntaxProvider for Riscv {
             })
             .collect()
     }
-    fn folding(&mut self, _: &str, _: &str) -> Vec<Fold> {
-        vec![]
+    fn folding(&mut self, _: &str, text: &str) -> Vec<Fold> {
+        let found = functions(text);
+        let lines: Vec<_> = text.lines().collect();
+        found
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| {
+                let mut end = found.get(i + 1).map_or(lines.len(), |n| n.line as usize).saturating_sub(1);
+                // Leave the blank lines and the next function's signature comment outside the fold.
+                while end > f.line as usize
+                    && lines.get(end).is_none_or(|l| {
+                        let l = l.trim();
+                        l.is_empty() || l.starts_with('#') || l.starts_with("//")
+                    })
+                {
+                    end -= 1;
+                }
+                (end > f.line as usize).then_some(Fold {
+                    start_line: f.line,
+                    end_line: end as u32,
+                    kind: FoldKind::Region,
+                })
+            })
+            .collect()
     }
 }
 
+fn item(label: &str, kind: CompletionKind, detail: Option<String>, doc: Option<String>, sort: &str) -> CompletionItem {
+    let mut item = CompletionItem::new(label, kind);
+    item.detail = detail;
+    item.documentation = doc;
+    item.sort_text = Some(format!("{sort}{label}"));
+    item
+}
+
+fn registers() -> impl Iterator<Item = String> {
+    language::REGISTERS
+        .split_whitespace()
+        .map(str::to_owned)
+        .chain(["x", "f"].into_iter().flat_map(|p| (0..32).map(move |n| format!("{p}{n}"))))
+}
+
 impl Providers for Riscv {
-    fn completion(&mut self, _: &Document, _: openidea_plugin::Position, _: Option<&str>) -> Vec<CompletionItem> {
-        let mut items: Vec<_> = language::words()
-            .into_iter()
-            .map(|(word, register)| {
-                CompletionItem::new(word, if register { CompletionKind::Variable } else { CompletionKind::Keyword })
-            })
-            .collect();
-        for prefix in ['x', 'f'] {
-            for n in 0..32 {
-                items.push(CompletionItem::new(&format!("{prefix}{n}"), CompletionKind::Variable));
+    fn completion(&mut self, doc: &Document, at: Position, _: Option<&str>) -> Vec<CompletionItem> {
+        let Some(offset) = text::offset(&doc.text, at) else {
+            return vec![];
+        };
+        let code = blank_comments(&doc.text);
+        let prefix_start = editor::word_at(&code, offset).map_or(offset, |w| w.start.min(offset));
+        let replace = Some(editor::span_range(&doc.text, prefix_start..offset));
+        let mut items = Vec::new();
+        match editor::context(&doc.text, &code, offset) {
+            Context::Comment => return vec![],
+            Context::Mnemonic => {
+                for op in language::INSTRUCTIONS.split_whitespace() {
+                    let info = docs::instruction(op);
+                    let mut it = item(
+                        op,
+                        CompletionKind::Keyword,
+                        info.as_ref().map(|i| i.syntax.to_owned()),
+                        info.map(|i| i.summary),
+                        "1",
+                    );
+                    it.insert_text = format!("{op} ");
+                    items.push(it);
+                }
+                for d in language::DIRECTIVES.split_whitespace() {
+                    items.push(item(d, CompletionKind::Keyword, None, docs::directive(d).map(str::to_owned), "2"));
+                }
+                let mut function = item(
+                    "function",
+                    CompletionKind::Snippet,
+                    Some("exported function with C signature".into()),
+                    None,
+                    "3",
+                );
+                function.insert_text = "        .globl ${1:name}\n# int64_t ${1:name}(${2:int64_t a})\n${1:name}:\n        $0\n        ret".into();
+                function.snippet = true;
+                items.push(function);
+                let mut syscall =
+                    item("ecall exit", CompletionKind::Snippet, Some("exit(a0) via RARS service 10".into()), None, "3");
+                syscall.insert_text = "li a7, 10\necall".into();
+                syscall.filter_text = Some("ecall exit".into());
+                items.push(syscall);
+            }
+            Context::Operand { op, index, before } => {
+                let info = docs::instruction(op);
+                let slot = info
+                    .as_ref()
+                    .and_then(|i| docs::operands(i.syntax).get(index).map(|s| s.to_string()))
+                    .unwrap_or_default();
+                let wants_label = slot.contains("label") || slot == "symbol" || op.starts_with('.');
+                let float = slot.starts_with('f');
+                if op.starts_with('.') && !matches!(op, ".word" | ".dword" | ".globl" | ".global" | ".type" | ".size") {
+                    return vec![];
+                }
+                if !op.starts_with('.') {
+                    let after_paren = before.rfind('(').is_some_and(|p| !before[p..].contains(')'));
+                    for r in registers() {
+                        let is_float = r.starts_with('f') && r != "fp";
+                        let rank = if after_paren {
+                            if r == "sp" { "0" } else { "1" }
+                        } else if wants_label || is_float != float {
+                            "5"
+                        } else {
+                            "1"
+                        };
+                        items.push(item(
+                            &r,
+                            CompletionKind::Variable,
+                            docs::register(&r).map(|d| d.replace("**", "")),
+                            None,
+                            rank,
+                        ));
+                    }
+                }
+                let functions = functions(&doc.text);
+                let mut seen = std::collections::HashSet::new();
+                for label in editor::labels(&code) {
+                    if editor::valid_name(&label.name) && seen.insert(label.name.clone()) {
+                        let f = functions.iter().find(|f| f.name == label.name);
+                        let kind = if label.constant {
+                            CompletionKind::Constant
+                        } else if f.is_some() {
+                            CompletionKind::Function
+                        } else {
+                            CompletionKind::Reference
+                        };
+                        let detail = f.map(|f| {
+                            f.parameters.as_ref().map_or("function".into(), |p| format!("({})", p.join(", ")))
+                        });
+                        items.push(item(&label.name, kind, detail, None, if wants_label { "0" } else { "3" }));
+                    }
+                }
             }
         }
+        for it in &mut items {
+            it.replace = replace;
+        }
         items
+    }
+
+    fn definition(&mut self, doc: &Document, at: Position) -> Vec<Location> {
+        text::offset(&doc.text, at)
+            .and_then(|o| editor::definition(&doc.text, o))
+            .map(|span| Location { path: doc.path.clone(), range: editor::span_range(&doc.text, span) })
+            .into_iter()
+            .collect()
+    }
+}
+
+impl HoverProvider for Riscv {
+    fn hover(&mut self, doc: &Document, at: Position) -> Option<Hover> {
+        let (markdown, span) = editor::hover(&doc.text, text::offset(&doc.text, at)?)?;
+        Some(Hover::new(markdown).range(editor::span_range(&doc.text, span)))
+    }
+}
+
+impl DiagnosticsProvider for Riscv {
+    fn diagnostics(&mut self, doc: &Document) -> Vec<Diagnostic> {
+        editor::diagnostics(&doc.text)
     }
 }
 
 impl LanguageFeatures for Riscv {
+    fn signature_help(&mut self, doc: &Document, at: Position) -> Option<SignatureHelp> {
+        let offset = text::offset(&doc.text, at)?;
+        let code = blank_comments(&doc.text);
+        let Context::Operand { op, index, .. } = editor::context(&doc.text, &code, offset) else {
+            return None;
+        };
+        let info = docs::instruction(op)?;
+        let label = format!("{op} {}", info.syntax);
+        let mut parameters = Vec::new();
+        let mut from = op.len() + 1;
+        for part in docs::operands(info.syntax) {
+            let start = label[from..].find(part)? + from;
+            from = start + part.len();
+            let utf16 = |i: usize| label[..i].encode_utf16().count() as u32;
+            parameters
+                .push(Parameter { label: ParameterLabel::Offsets((utf16(start), utf16(from))), documentation: None });
+        }
+        let active = (index as u32).min(parameters.len().saturating_sub(1) as u32);
+        Some(SignatureHelp {
+            signatures: vec![Signature { label, documentation: Some(info.summary), parameters }],
+            active_signature: 0,
+            active_parameter: active,
+        })
+    }
+
+    fn document_highlights(&mut self, doc: &Document, at: Position) -> Vec<Occurrence> {
+        let Some(offset) = text::offset(&doc.text, at) else {
+            return vec![];
+        };
+        editor::occurrences(&doc.text, offset)
+            .into_iter()
+            .map(|(span, write)| Occurrence {
+                range: editor::span_range(&doc.text, span),
+                kind: if write { "write" } else { "read" }.into(),
+            })
+            .collect()
+    }
+
     fn gutter_actions(&mut self, doc: &Document) -> Vec<GutterAction> {
         functions(&doc.text)
             .into_iter()
@@ -178,7 +371,7 @@ impl LanguageFeatures for Riscv {
     }
 }
 
-register_plugin!(Riscv, syntax, providers, language_features, run_configurations);
+register_plugin!(Riscv, syntax, providers, hover, diagnostics, language_features, run_configurations);
 
 #[cfg(test)]
 mod tests;

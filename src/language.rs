@@ -29,15 +29,6 @@ fn lexer() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r#"(?s:/\*.*?(?:\*/|$))|//[^\n]*|\#[^\n]*|"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[0-9]+[fb]\b|0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?|[A-Za-z_.$][\w.$]*"#).unwrap())
 }
 
-pub fn words() -> Vec<(&'static str, bool)> {
-    INSTRUCTIONS
-        .split_whitespace()
-        .map(|w| (w, false))
-        .chain(REGISTERS.split_whitespace().map(|w| (w, true)))
-        .chain(DIRECTIVES.split_whitespace().map(|w| (w, false)))
-        .collect()
-}
-
 pub fn highlights(text: &str) -> Vec<Token> {
     lexer()
         .find_iter(text)
@@ -83,7 +74,8 @@ pub struct Function {
     pub parameters: Option<Vec<String>>,
 }
 
-pub fn functions(text: &str) -> Vec<Function> {
+/// `text` with comments and string literals replaced by spaces, keeping offsets and newlines.
+pub fn blank_comments(text: &str) -> String {
     let mut code = text.as_bytes().to_vec();
     for t in highlights(text) {
         if matches!(t.kind, Highlight::Comment | Highlight::String) {
@@ -94,7 +86,11 @@ pub fn functions(text: &str) -> Vec<Function> {
             }
         }
     }
-    let code = String::from_utf8(code).unwrap();
+    String::from_utf8(code).unwrap()
+}
+
+pub fn functions(text: &str) -> Vec<Function> {
+    let code = blank_comments(text);
     let mut exports = HashSet::new();
     for line in code.lines().map(str::trim) {
         let (directive, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
