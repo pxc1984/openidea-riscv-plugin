@@ -1,6 +1,6 @@
 id = "openidea.riscv"
 name = "RISC-V"
-version = "0.1.0"
+version = "0.1.1"
 description = "RISC-V assembly highlighting, completion and function runs with the standalone RV64 teaching simulator."
 authors = ["OpenIDEA contributors"]
 license = "Apache-2.0"
