@@ -1,0 +1,39 @@
+id = "openidea.riscv"
+name = "RISC-V"
+version = "0.1.0"
+description = "RISC-V assembly highlighting, completion and function runs with the standalone RV64 teaching simulator."
+authors = ["OpenIDEA contributors"]
+license = "Apache-2.0"
+categories = ["languages"]
+engines.openidea = "^1.4"
+wasm = "dist/plugin.wasm"
+activation = ["on-language:riscv", "on-command:*"]
+
+[capabilities]
+required = ["project.read", "editor.read", "storage"]
+optional = ["process:openidea-riscv"]
+
+[[contributes.languages]]
+path = "languages/riscv.toml"
+
+[[contributes.commands]]
+id = "run"
+title = "RISC-V: Run File or Function"
+category = "RISC-V"
+icon = "run"
+when = "editorLangId == riscv"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "run"
+
+[[contributes.menus]]
+menu = "editor.title"
+command = "run"
+
+[[contributes.providers]]
+kinds = ["completion", "gutter-actions"]
+languages = ["riscv"]
+
+[[contributes.runConfigurations]]
+files = ["**/*.asm", "**/*.s", "**/*.S"]

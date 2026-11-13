@@ -1,0 +1,12 @@
+[package]
+name = "ide-riscv"
+description = "RV64 educational assembler and source simulator for the OpenIDEA RISC-V plugin"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[workspace]
+
+[[bin]]
+name = "openidea-riscv"
+path = "src/main.rs"

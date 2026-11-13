@@ -1,0 +1,29 @@
+[package]
+name = "openidea-plugin-openidea-riscv"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+exclude = ["runner"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openidea-plugin = { git = "https://github.com/l0ng-ai/openidea", rev = "85f4ffb67c4f9dffc25ee0a293f77e4ba57bb572" }
+regex = "1"
+
+[dev-dependencies]
+ide-riscv = { path = "runner" }
+
+[[test]]
+name = "execution"
+path = "runner/tests/execution.rs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
