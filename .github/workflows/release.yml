@@ -1,0 +1,114 @@
+name: Draft release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+jobs:
+  verify-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require the tagged commit to be on main
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+
+  plugin:
+    needs: verify-tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - run: cargo test --locked
+      - run: ./build.sh
+      - name: Package for OpenIDEA's Install Plugin from Package File
+        shell: python
+        run: |
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          Path('release-assets').mkdir()
+          with ZipFile('release-assets/openidea.riscv.oiplugin', 'w', ZIP_DEFLATED) as package:
+              for name in ['plugin.toml', 'README.md', 'LICENSE', 'dist/plugin.wasm']:
+                  package.write(name)
+              for directory in ['languages', 'locales']:
+                  for path in sorted(Path(directory).rglob('*')):
+                      if path.is_file():
+                          package.write(path)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin
+          path: release-assets/*.oiplugin
+          if-no-files-found: error
+
+  simulator:
+    needs: verify-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo test --locked --manifest-path runner/Cargo.toml
+      - run: cargo build --locked --release --manifest-path runner/Cargo.toml --target ${{ matrix.target }}
+      - name: Package simulator executable
+        shell: python
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          target = os.environ['BUILD_TARGET']
+          executable = 'openidea-riscv.exe' if 'windows' in target else 'openidea-riscv'
+          Path('release-assets').mkdir()
+          with ZipFile(f'release-assets/openidea-riscv-{target}.zip', 'w', ZIP_DEFLATED) as package:
+              package.write(Path('runner/target') / target / 'release' / executable, executable)
+              package.write('LICENSE')
+              package.write('README.md')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simulator-${{ matrix.target }}
+          path: release-assets/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [plugin, simulator]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create draft release with installable plugin and simulators
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/* \
+            --verify-tag --draft --title "$RELEASE_TAG" --generate-notes

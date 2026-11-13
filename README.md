@@ -34,6 +34,26 @@ cargo clippy --manifest-path Cargo.toml --all-targets -- -D warnings
 
 The plugin tests include the simulator's execution suite. The helper is a separate native Cargo package; install it on each machine that executes programs. The WASM component uses the standard plugin API and needs no IDE changes.
 
+## Releases
+
+Pushing a tag whose commit is on `main` builds a draft GitHub release named after
+the tag. For example, after merging the release changes into `main`:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The draft includes `openidea.riscv.oiplugin` and simulator ZIPs for Linux x64,
+macOS Intel/Apple Silicon, and Windows x64. Download the plugin and use
+**Settings → Plugins → Install Plugin from Package File**. Extract the matching
+simulator ZIP, put `openidea-riscv` (`openidea-riscv.exe` on Windows) on PATH, or
+select its absolute path in the plugin's process permissions. On macOS/Linux,
+run `chmod +x` on the extracted executable if the ZIP extractor drops permissions.
+
+Update the versions in `plugin.toml`, both Cargo manifests, and their lockfiles
+before tagging a new version. Review and publish the draft when ready.
+
 ## Origin and license
 
 Extracted from [OpenIDEA](https://github.com/l0ng-ai/openidea), branch `feature/riscv-lsp` at commit `47943a84`, including its standalone simulator and sample project. The SDK is pinned to the public OpenIDEA commit used by that branch; no local IDE checkout is required. Licensed under Apache-2.0; see [LICENSE](LICENSE).
