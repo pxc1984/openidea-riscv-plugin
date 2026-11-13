@@ -204,3 +204,32 @@ fn examples_are_clean_and_large_files_are_fast() {
     Riscv.completion(&doc(&big), Position { line: 10, character: 20 }, None);
     assert!(start.elapsed().as_millis() < if cfg!(debug_assertions) { 3000 } else { 100 }, "{:?}", start.elapsed());
 }
+
+#[test]
+fn run_at_caret_uses_the_enclosing_function_and_rerun_repeats_without_prompts() {
+    let mock =
+        MockHost::install().with_capabilities(&["project.read", "editor.read", "storage", "process:openidea-riscv"]);
+    let path = "/project/f.asm";
+    mock.add_file(path, SOURCE);
+    // Caret on `mul a0, a0, a0` inside poly (line 8).
+    mock.open_editor(path, "riscv", SOURCE, &[(8, 8, 8, 8)]);
+    let mut plugin = Riscv;
+    mock.set_run_configurations(plugin.configurations("/project"));
+    mock.answer_next_prompt(Some(&["7"]));
+    plugin.run_command("run-at-caret", &mock.invocation(), None).unwrap();
+    assert_eq!(mock.configuration_runs()[0].2, ["--function", "poly", "--", "7"]);
+    plugin.run_command("rerun", &mock.invocation(), None).unwrap();
+    let runs = mock.configuration_runs();
+    assert_eq!(runs.len(), 2, "rerun asks nothing");
+    assert_eq!(runs[1].1, runs[0].1);
+    assert_eq!(runs[1].2, runs[0].2);
+}
+
+#[test]
+fn outline_ranges_end_at_the_last_instruction() {
+    let text = include_str!("../examples/riscv-app/functions.asm");
+    let outline = Riscv.outline("riscv", text);
+    let sum = &text[outline[0].range.clone()];
+    assert!(sum.starts_with("sum:") && sum.ends_with("ret"), "{sum:?}");
+    assert!(text[outline[2].range.clone()].ends_with("ret"));
+}

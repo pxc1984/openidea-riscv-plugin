@@ -20,6 +20,9 @@ use openidea_plugin::{
 #[derive(Default)]
 pub struct Riscv;
 
+/// The configuration and argv of the last run, separated by U+001F.
+const LAST_RUN: &str = "last-run";
+
 fn config_id(path: &str) -> String {
     let hash = path.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
     format!("file-{hash:016x}")
@@ -52,8 +55,15 @@ fn arguments(text: &str, count: Option<usize>) -> Result<Vec<String>, Error> {
 
 impl Plugin for Riscv {
     fn run_command(&mut self, id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
-        if id != "run" {
+        if !matches!(id, "run" | "run-at-caret" | "rerun") {
             return Err(Error::NotFound(id.into()));
+        }
+        if id == "rerun"
+            && let Some(last) = host::storage::get(LAST_RUN)?
+        {
+            let mut parts = last.split('\u{1f}').map(str::to_owned);
+            let config = parts.next().unwrap_or_default();
+            return host::start_run(&config, &parts.collect::<Vec<_>>(), false).map(Some);
         }
         let editor = ctx.editor().ok_or_else(|| Error::Invalid("Open a RISC-V assembly file".into()))?;
         if editor.language() != "riscv" {
@@ -62,7 +72,12 @@ impl Plugin for Riscv {
         let path = editor.path();
         let source = editor.document()?.text;
         let found = functions(&source);
-        let selected = if let Some(name) = arg {
+        let caret = editor.selections()?.first().and_then(|r| text::offset(&source, r.start));
+        let at_caret =
+            (id == "run-at-caret").then(|| caret.and_then(|c| found.iter().rfind(|f| f.offset <= c))).flatten();
+        let selected = if let Some(function) = at_caret {
+            Some(function)
+        } else if let Some(name) = arg {
             Some(found.iter().find(|f| f.name == name).ok_or_else(|| Error::NotFound(name.into()))?)
         } else {
             let items: Vec<_> = std::iter::once(PickItem::new("", "Run program"))
@@ -105,7 +120,10 @@ impl Plugin for Riscv {
                 }
             }
         }
-        host::start_run(&config_id(&path), &args, false).map(Some)
+        let config = config_id(&path);
+        let last = std::iter::once(config.as_str()).chain(args.iter().map(String::as_str)).collect::<Vec<_>>();
+        host::storage::set(LAST_RUN, &last.join("\u{1f}"))?;
+        host::start_run(&config, &args, false).map(Some)
     }
 }
 
@@ -135,42 +153,54 @@ impl RunConfigurations for Riscv {
     }
 }
 
+/// The last line of function `i`: before the next function, without the blank lines and the
+/// next function's signature comment in between.
+fn last_code_line(found: &[language::Function], i: usize, lines: &[&str]) -> usize {
+    let start = found[i].line as usize;
+    let mut end = found.get(i + 1).map_or(lines.len(), |n| n.line as usize).saturating_sub(1);
+    while end > start
+        && lines.get(end).is_none_or(|l| {
+            let l = l.trim();
+            l.is_empty() || l.starts_with('#') || l.starts_with("//")
+        })
+    {
+        end -= 1;
+    }
+    end
+}
+
 impl SyntaxProvider for Riscv {
     fn highlights(&mut self, _: &str, text: &str) -> Vec<Token> {
         highlights(text)
     }
     fn outline(&mut self, _: &str, text: &str) -> Vec<Symbol> {
         let found = functions(text);
+        let lines: Vec<_> = text.split_inclusive('\n').collect();
         found
             .iter()
             .enumerate()
-            .map(|(i, f)| Symbol {
-                name: f.name.clone(),
-                detail: f.parameters.as_ref().map(|p| p.join(", ")),
-                kind: SymbolKind::Function,
-                range: f.offset..found.get(i + 1).map_or(text.len(), |f| f.offset),
-                name_range: f.offset..f.offset + f.name.len(),
-                parent: None,
+            .map(|(i, f)| {
+                let last = last_code_line(&found, i, &lines);
+                let end = lines[..=last].iter().map(|l| l.len()).sum::<usize>();
+                Symbol {
+                    name: f.name.clone(),
+                    detail: f.parameters.as_ref().map(|p| p.join(", ")),
+                    kind: SymbolKind::Function,
+                    range: f.offset..lines.get(last).map_or(end, |l| end - (l.len() - l.trim_end().len())),
+                    name_range: f.offset..f.offset + f.name.len(),
+                    parent: None,
+                }
             })
             .collect()
     }
     fn folding(&mut self, _: &str, text: &str) -> Vec<Fold> {
         let found = functions(text);
-        let lines: Vec<_> = text.lines().collect();
+        let lines: Vec<_> = text.split_inclusive('\n').collect();
         found
             .iter()
             .enumerate()
             .filter_map(|(i, f)| {
-                let mut end = found.get(i + 1).map_or(lines.len(), |n| n.line as usize).saturating_sub(1);
-                // Leave the blank lines and the next function's signature comment outside the fold.
-                while end > f.line as usize
-                    && lines.get(end).is_none_or(|l| {
-                        let l = l.trim();
-                        l.is_empty() || l.starts_with('#') || l.starts_with("//")
-                    })
-                {
-                    end -= 1;
-                }
+                let end = last_code_line(&found, i, &lines);
                 (end > f.line as usize).then_some(Fold {
                     start_line: f.line,
                     end_line: end as u32,

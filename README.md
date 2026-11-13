@@ -32,6 +32,29 @@ The plugin contributes whole-file configurations to the normal Run window. Funct
 
 See [the fixture](examples/riscv-app/README.md) for the supported simulator dialect and examples. The former built-in RISC-V configuration type and Run Context producer are replaced by plugin configurations and commands; previously saved `kind = "riscv"` configurations should be recreated.
 
+## Vim
+
+Everything is reachable from the keyboard. Plugin commands are IDE actions, so map them in
+`~/.ideavimrc` (or `~/.openideavimrc`) next to the IDE actions the plugin feeds:
+
+```vim
+let mapleader = " "
+nmap gd <Action>(GotoDeclaration)          " label, constant or 1b/1f under the caret
+nmap K  <Action>(QuickJavaDoc)             " instruction, register or number reference
+imap <C-k> <Action>(ParameterInfo)         " operands of the instruction being typed
+nmap ]m <Action>(MethodDown)               " next / previous function
+nmap [m <Action>(MethodUp)
+nmap ]d <Action>(GotoNextError)            " next assembler problem
+nmap [d <Action>(GotoPreviousError)
+nmap <leader>r <Action>(plugin.openidea.riscv.run-at-caret)
+nmap <leader>R <Action>(plugin.openidea.riscv.rerun)
+nmap <leader>p <Action>(plugin.openidea.riscv.run)
+```
+
+- **RISC-V: Run Function at Caret** runs the function around the caret (it prompts for its arguments; outside a function it offers the picker). **RISC-V: Rerun Last** repeats the last plugin run, arguments included, without prompting.
+- `gcc` / `gc{motion}` comment with `#`; `*`, `%` and `ci(` (`8(sp)`) work as usual. As in Vim's default `iskeyword`, `w` stops at the `.` of `sext.w`.
+- Needs OpenIDEA with assembly support in Vim mode (`af` / `if` from the function outline, labels at column 0 and statements one tab in for Enter, `o`/`O` and `=`). Older versions leave those to the generic fallback.
+
 ## Development
 
 ```sh

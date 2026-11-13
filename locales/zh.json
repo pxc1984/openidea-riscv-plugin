@@ -2,5 +2,7 @@
   "RISC-V": "RISC-V",
   "RISC-V Assembly": "RISC-V 汇编",
   "RISC-V: Run File or Function": "RISC-V：运行文件或函数",
-  "Run program": "运行程序"
+  "Run program": "运行程序",
+  "RISC-V: Run Function at Caret": "RISC-V：运行光标处的函数",
+  "RISC-V: Rerun Last": "RISC-V：重新运行上次"
 }

@@ -23,9 +23,26 @@ category = "RISC-V"
 icon = "run"
 when = "editorLangId == riscv"
 
+[[contributes.commands]]
+id = "run-at-caret"
+title = "RISC-V: Run Function at Caret"
+category = "RISC-V"
+icon = "run"
+when = "editorLangId == riscv"
+
+[[contributes.commands]]
+id = "rerun"
+title = "RISC-V: Rerun Last"
+category = "RISC-V"
+icon = "rerun"
+
 [[contributes.menus]]
 menu = "editor.context"
 command = "run"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "run-at-caret"
 
 [[contributes.menus]]
 menu = "editor.title"
