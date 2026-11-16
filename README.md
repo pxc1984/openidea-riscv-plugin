@@ -28,9 +28,9 @@ Open an assembly file and invoke **RISC-V: Run File or Function** from Find Acti
 
 A preceding C signature comment, such as `# int64_t sum(int64_t a, int64_t b)`, names the arguments and enforces their count. Arguments accept decimal, hexadecimal, binary and octal 64-bit integers, are remembered per file/function, and are passed as separate argv entries. Dismissing either prompt cancels the run.
 
-The plugin contributes whole-file configurations to the normal Run window. Function commands append `--function label -- arguments` to that file's configuration. Runs use the normal save, Stop, Rerun and run target handling. Rerun repeats the submitted arguments; invoke the plugin command again to change them. The default instruction limit is 10 million; saved configurations can change `--max-steps`. Debugging is not provided.
+Run commands and gutter icons start the `openidea-riscv` simulator in a Terminal tab on the saved file: the whole program, or `--function label -- arguments` for a function. A file with unsaved changes is not run. Rerun repeats the last run without prompts; invoke the plugin command again to change the arguments. The instruction limit is 10 million. Debugging is not provided.
 
-See [the fixture](examples/riscv-app/README.md) for the supported simulator dialect and examples. The former built-in RISC-V configuration type and Run Context producer are replaced by plugin configurations and commands; previously saved `kind = "riscv"` configurations should be recreated.
+See [the fixture](examples/riscv-app/README.md) for the supported simulator dialect and examples. The former built-in RISC-V configuration type and Run Context producer are replaced by plugin commands; previously saved `kind = "riscv"` configurations should be recreated.
 
 ## Vim
 

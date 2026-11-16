@@ -13,19 +13,24 @@ use openidea_plugin::language_features::{
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Providers};
 use openidea_plugin::syntax::{Fold, FoldKind, Symbol, SymbolKind, SyntaxProvider, Token};
 use openidea_plugin::{
-    Diagnostic, Error, Invocation, Location, PickItem, Plugin, PluginRunConfiguration, Position, RunConfigurations,
-    host, register_plugin, text,
+    Diagnostic, Error, Invocation, Location, PickItem, Plugin, Position, host, register_plugin, text,
 };
 
 #[derive(Default)]
 pub struct Riscv;
 
-/// The configuration and argv of the last run, separated by U+001F.
+/// The terminal title and simulator argv of the last run, separated by U+001F.
 const LAST_RUN: &str = "last-run";
+const SIMULATOR: &str = "openidea-riscv";
+const MAX_STEPS: &str = "10000000";
 
-fn config_id(path: &str) -> String {
-    let hash = path.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3));
-    format!("file-{hash:016x}")
+/// Runs the simulator in a terminal tab. Not through a host run configuration: those are offered only
+/// when a literal marker file exists in the project root, which an arbitrary assembly project lacks.
+fn run_simulator(title: &str, argv: &[String]) -> Result<Option<String>, Error> {
+    let last = std::iter::once(title).chain(argv.iter().map(String::as_str)).collect::<Vec<_>>();
+    host::storage::set(LAST_RUN, &last.join("\u{1f}"))?;
+    host::open_terminal(title, SIMULATOR, argv)?;
+    Ok(None)
 }
 
 fn arguments(text: &str, count: Option<usize>) -> Result<Vec<String>, Error> {
@@ -72,14 +77,17 @@ fn launch(id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String
         && let Some(last) = host::storage::get(LAST_RUN)?
     {
         let mut parts = last.split('\u{1f}').map(str::to_owned);
-        let config = parts.next().unwrap_or_default();
-        return host::start_run(&config, &parts.collect::<Vec<_>>(), false).map(Some);
+        let title = parts.next().unwrap_or_default();
+        return run_simulator(&title, &parts.collect::<Vec<_>>());
     }
     let editor = ctx.editor().ok_or_else(|| Error::Invalid("Open a RISC-V assembly file".into()))?;
     if editor.language() != "riscv" {
         return Err(Error::Invalid("Open a RISC-V assembly file".into()));
     }
     let path = editor.path();
+    if host::open_editors()?.iter().any(|e| e.path == path && e.dirty) {
+        return Err(Error::Invalid("Save the file first: the simulator runs it from disk".into()));
+    }
     let source = editor.document()?.text;
     let found = functions(&source);
     let caret = editor.selections()?.first().and_then(|r| text::offset(&source, r.start));
@@ -100,7 +108,9 @@ fn launch(id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String
         };
         found.iter().find(|f| f.name == name)
     };
-    let mut args = Vec::new();
+    let mut args = vec![path.clone(), "--max-steps".into(), MAX_STEPS.into()];
+    let file_name = path.rsplit(['/', '\\']).next().unwrap_or(&path);
+    let mut title = format!("RISC-V: {file_name}");
     if let Some(function) = selected {
         args.extend(["--function".into(), function.name.clone()]);
         let key = format!("arguments:{path}:{}", function.name);
@@ -117,6 +127,7 @@ fn launch(id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String
             match arguments(&input, function.parameters.as_ref().map(Vec::len)) {
                 Ok(values) => {
                     host::storage::set(&key, &input)?;
+                    title = format!("RISC-V: {}({})", function.name, values.join(", "));
                     args.push("--".into());
                     args.extend(values);
                     break;
@@ -128,36 +139,7 @@ fn launch(id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String
             }
         }
     }
-    let config = config_id(&path);
-    let last = std::iter::once(config.as_str()).chain(args.iter().map(String::as_str)).collect::<Vec<_>>();
-    host::storage::set(LAST_RUN, &last.join("\u{1f}"))?;
-    host::start_run(&config, &args, false).map(Some)
-}
-
-impl RunConfigurations for Riscv {
-    fn configurations(&mut self, root: &str) -> Vec<PluginRunConfiguration> {
-        let Some(project) = host::project_of(root) else {
-            return vec![];
-        };
-        let mut paths = Vec::new();
-        for pattern in ["**/*.asm", "**/*.s", "**/*.S"] {
-            paths.extend(project.find_files(pattern, 1000).unwrap_or_default());
-        }
-        paths.sort();
-        paths.dedup();
-        paths
-            .into_iter()
-            .take(1000)
-            .map(|path| PluginRunConfiguration {
-                id: config_id(&path),
-                name: format!("RISC-V: {}", path.strip_prefix(root).unwrap_or(&path).trim_start_matches('/')),
-                program: "openidea-riscv".into(),
-                args: vec![path, "--max-steps".into(), "10000000".into()],
-                cwd: Some(root.into()),
-                ..Default::default()
-            })
-            .collect()
-    }
+    run_simulator(&title, &args)
 }
 
 /// The last line of function `i`: before the next function, without the blank lines and the
@@ -408,7 +390,7 @@ impl LanguageFeatures for Riscv {
     }
 }
 
-register_plugin!(Riscv, syntax, providers, hover, diagnostics, language_features, run_configurations);
+register_plugin!(Riscv, syntax, providers, hover, diagnostics, language_features);
 
 #[cfg(test)]
 mod tests;

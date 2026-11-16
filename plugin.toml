@@ -10,7 +10,7 @@ wasm = "dist/plugin.wasm"
 activation = ["on-language:riscv", "on-command:*"]
 
 [capabilities]
-required = ["project.read", "editor.read", "storage"]
+required = ["editor.read", "storage"]
 optional = ["process:openidea-riscv"]
 
 [[contributes.languages]]
@@ -59,6 +59,3 @@ kinds = [
   "gutter-actions",
 ]
 languages = ["riscv"]
-
-[[contributes.runConfigurations]]
-files = ["**/*.asm", "**/*.s", "**/*.S"]

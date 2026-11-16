@@ -44,88 +44,6 @@ fn validates_integer_ranges_bases_and_arity() {
     assert!(arguments("", Some(0)).unwrap().is_empty());
 }
 
-fn setup() -> (MockHost, Riscv) {
-    let mock =
-        MockHost::install().with_capabilities(&["project.read", "editor.read", "storage", "process:openidea-riscv"]);
-    let path = "/project/a b; c.asm";
-    mock.add_file(path, SOURCE);
-    mock.open_editor(path, "riscv", SOURCE, &[]);
-    let mut plugin = Riscv;
-    mock.set_run_configurations(plugin.configurations("/project"));
-    (mock, plugin)
-}
-
-#[test]
-fn gutter_run_prompts_remembers_and_preserves_argv() {
-    let (mock, mut plugin) = setup();
-    mock.answer_next_prompt(Some(&["40 2"]));
-    plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap();
-    let runs = mock.configuration_runs();
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].2, ["--function", "sum", "--", "40", "2"]);
-    assert_eq!(host::storage::get("arguments:/project/a b; c.asm:sum").unwrap().as_deref(), Some("40 2"));
-    let configs = plugin.configurations("/project");
-    assert_eq!(configs[0].args[0], "/project/a b; c.asm");
-    let markers = plugin.gutter_actions(&Document { text: SOURCE.into(), ..Default::default() });
-    assert_eq!(
-        markers.iter().map(|m| (m.line, m.argument.as_deref())).collect::<Vec<_>>(),
-        [(5, Some("sum")), (8, Some("poly"))]
-    );
-}
-
-#[test]
-fn cancellation_and_bad_arity_do_not_launch() {
-    let (mock, mut plugin) = setup();
-    mock.answer_next_prompt(None);
-    assert!(plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap().is_none());
-    mock.answer_next_prompt(Some(&["1"]));
-    mock.answer_next_prompt(None);
-    assert!(plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap().is_none());
-    assert!(mock.configuration_runs().is_empty());
-    assert_eq!(mock.notifications().len(), 1);
-}
-
-#[test]
-fn program_runs_without_function_arguments_and_grants_are_enforced() {
-    let (mock, mut plugin) = setup();
-    mock.answer_next_prompt(Some(&[""]));
-    plugin.run_command("run", &mock.invocation(), None).unwrap();
-    assert!(mock.configuration_runs()[0].2.is_empty());
-    let mock = mock.with_capabilities(&["project.read", "editor.read", "storage"]);
-    mock.answer_next_prompt(Some(&["1 2"]));
-    assert_eq!(plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap(), None);
-    assert_eq!(mock.configuration_runs().len(), 1);
-    assert!(mock.notifications().last().unwrap().body.starts_with("Run failed:"));
-}
-
-/// Иконка в гуттере у `.globl` с сигнатурой-комментарием на той же строке. Если хост не может
-/// запустить (нет конфигурации, проект не доверен), гуттер глотает ошибку команды,
-/// поэтому плагин обязан показать её уведомлением.
-#[test]
-fn gutter_run_failures_are_reported_instead_of_silently_dropped() {
-    let source = "        .globl  sum         # int64_t aplusb(int64_t a, int64_t b);\nsum:    add     a0, a0, a1\n        ret\n";
-    let mock =
-        MockHost::install().with_capabilities(&["project.read", "editor.read", "storage", "process:openidea-riscv"]);
-    mock.add_file("/project/a.asm", source);
-    mock.open_editor("/project/a.asm", "riscv", source, &[]);
-    let mut plugin = Riscv;
-    let action = plugin.gutter_actions(&doc(source)).pop().unwrap();
-    assert_eq!((action.line, action.argument.as_deref()), (1, Some("sum")));
-
-    mock.answer_next_prompt(Some(&["1 2"]));
-    assert_eq!(plugin.run_command(&action.command, &mock.invocation(), action.argument.as_deref()).unwrap(), None);
-    assert!(mock.configuration_runs().is_empty());
-    let shown = mock.notifications();
-    assert_eq!(shown.len(), 1);
-    assert!(shown[0].body.starts_with("Run failed:"), "{:?}", shown[0].body);
-
-    mock.set_run_configurations(plugin.configurations("/project"));
-    mock.answer_next_prompt(Some(&["1 2"]));
-    plugin.run_command(&action.command, &mock.invocation(), action.argument.as_deref()).unwrap();
-    assert_eq!(mock.configuration_runs()[0].2, ["--function", "sum", "--", "1", "2"]);
-    assert_eq!(mock.notifications().len(), 1);
-}
-
 const LOOP: &str = "        .text\n        .globl count\n        .equ LIMIT, 10\n# int64_t count(int64_t n)\ncount:  li      t0, 0\n1:      addi    t0, t0, 1\n        blt     t0, a0, 1b\n        beqz    a0, done\n        mv      a0, t0 # result\ndone:   ret\n";
 
 fn doc(text: &str) -> Document {
@@ -236,26 +154,6 @@ fn examples_are_clean_and_large_files_are_fast() {
 }
 
 #[test]
-fn run_at_caret_uses_the_enclosing_function_and_rerun_repeats_without_prompts() {
-    let mock =
-        MockHost::install().with_capabilities(&["project.read", "editor.read", "storage", "process:openidea-riscv"]);
-    let path = "/project/f.asm";
-    mock.add_file(path, SOURCE);
-    // Caret on `mul a0, a0, a0` inside poly (line 8).
-    mock.open_editor(path, "riscv", SOURCE, &[(8, 8, 8, 8)]);
-    let mut plugin = Riscv;
-    mock.set_run_configurations(plugin.configurations("/project"));
-    mock.answer_next_prompt(Some(&["7"]));
-    plugin.run_command("run-at-caret", &mock.invocation(), None).unwrap();
-    assert_eq!(mock.configuration_runs()[0].2, ["--function", "poly", "--", "7"]);
-    plugin.run_command("rerun", &mock.invocation(), None).unwrap();
-    let runs = mock.configuration_runs();
-    assert_eq!(runs.len(), 2, "rerun asks nothing");
-    assert_eq!(runs[1].1, runs[0].1);
-    assert_eq!(runs[1].2, runs[0].2);
-}
-
-#[test]
 fn outline_ranges_end_at_the_last_instruction() {
     let text = include_str!("../examples/riscv-app/functions.asm");
     let outline = Riscv.outline("riscv", text);
@@ -264,24 +162,122 @@ fn outline_ranges_end_at_the_last_instruction() {
     assert!(text[outline[2].range.clone()].ends_with("ret"));
 }
 
+const CAPABILITIES: &[&str] = &["editor.read", "storage", "process:openidea-riscv"];
+
+fn setup() -> (MockHost, Riscv) {
+    let mock = MockHost::install().with_capabilities(CAPABILITIES);
+    let path = "/project/a b; c.asm";
+    mock.add_file(path, SOURCE);
+    mock.open_editor(path, "riscv", SOURCE, &[]);
+    (mock, Riscv)
+}
+
+fn simulator_argv(path: &str, run: &[&str]) -> Vec<String> {
+    [path, "--max-steps", "10000000"].iter().chain(run).map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn gutter_run_prompts_remembers_and_preserves_argv() {
+    let (mock, mut plugin) = setup();
+    mock.answer_next_prompt(Some(&["40 2"]));
+    assert_eq!(plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap(), None);
+    let runs = mock.terminals();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].title, "RISC-V: sum(40, 2)");
+    assert_eq!(runs[0].program, "openidea-riscv");
+    assert_eq!(runs[0].args, simulator_argv("/project/a b; c.asm", &["--function", "sum", "--", "40", "2"]));
+    assert_eq!(host::storage::get("arguments:/project/a b; c.asm:sum").unwrap().as_deref(), Some("40 2"));
+    let markers = plugin.gutter_actions(&Document { text: SOURCE.into(), ..Default::default() });
+    assert_eq!(
+        markers.iter().map(|m| (m.line, m.argument.as_deref())).collect::<Vec<_>>(),
+        [(5, Some("sum")), (8, Some("poly"))]
+    );
+}
+
+#[test]
+fn cancellation_and_bad_arity_do_not_launch() {
+    let (mock, mut plugin) = setup();
+    mock.answer_next_prompt(None);
+    assert!(plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap().is_none());
+    mock.answer_next_prompt(Some(&["1"]));
+    mock.answer_next_prompt(None);
+    assert!(plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap().is_none());
+    assert!(mock.terminals().is_empty());
+    assert_eq!(mock.notifications().len(), 1);
+}
+
+#[test]
+fn program_runs_without_function_arguments_and_grants_are_enforced() {
+    let (mock, mut plugin) = setup();
+    mock.answer_next_prompt(Some(&[""]));
+    plugin.run_command("run", &mock.invocation(), None).unwrap();
+    assert_eq!(mock.terminals()[0].title, "RISC-V: a b; c.asm");
+    assert_eq!(mock.terminals()[0].args, simulator_argv("/project/a b; c.asm", &[]));
+    let mock = mock.with_capabilities(&["editor.read", "storage"]);
+    mock.answer_next_prompt(Some(&["1 2"]));
+    assert_eq!(plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap(), None);
+    assert_eq!(mock.terminals().len(), 1);
+    assert!(mock.notifications().last().unwrap().body.starts_with("Run failed:"));
+}
+
+/// Регрессия: `.globl sum` с сигнатурой-комментарием на той же строке. Запуск не должен зависеть
+/// от run-конфигураций хоста (их нет без маркер-файла в корне проекта -> "no owned run configuration").
+#[test]
+fn gutter_run_works_without_host_run_configurations() {
+    let source = "        .globl  sum         # int64_t aplusb(int64_t a, int64_t b);\nsum:    add     a0, a0, a1\n        ret\n";
+    let mock = MockHost::install().with_capabilities(CAPABILITIES);
+    mock.add_file("/project/a.asm", source);
+    mock.open_editor("/project/a.asm", "riscv", source, &[]);
+    let mut plugin = Riscv;
+    let action = plugin.gutter_actions(&doc(source)).pop().unwrap();
+    assert_eq!((action.line, action.argument.as_deref()), (1, Some("sum")));
+    mock.answer_next_prompt(Some(&["1 2"]));
+    plugin.run_command(&action.command, &mock.invocation(), action.argument.as_deref()).unwrap();
+    assert_eq!(mock.terminals()[0].args, simulator_argv("/project/a.asm", &["--function", "sum", "--", "1", "2"]));
+    assert!(mock.notifications().is_empty(), "{:?}", mock.notifications());
+}
+
+#[test]
+fn unsaved_file_is_reported_instead_of_running_stale_code() {
+    let (mock, mut plugin) = setup();
+    mock.type_in_editor("\n");
+    assert_eq!(plugin.run_command("run", &mock.invocation(), Some("sum")).unwrap(), None);
+    assert!(mock.terminals().is_empty());
+    assert!(mock.notifications()[0].body.contains("Save the file first"), "{:?}", mock.notifications());
+}
+
+#[test]
+fn run_at_caret_uses_the_enclosing_function_and_rerun_repeats_without_prompts() {
+    let mock = MockHost::install().with_capabilities(CAPABILITIES);
+    let path = "/project/f.asm";
+    mock.add_file(path, SOURCE);
+    // Caret on `mul a0, a0, a0` inside poly (line 8).
+    mock.open_editor(path, "riscv", SOURCE, &[(8, 8, 8, 8)]);
+    let mut plugin = Riscv;
+    mock.answer_next_prompt(Some(&["7"]));
+    plugin.run_command("run-at-caret", &mock.invocation(), None).unwrap();
+    assert_eq!(mock.terminals()[0].args, simulator_argv(path, &["--function", "poly", "--", "7"]));
+    plugin.run_command("rerun", &mock.invocation(), None).unwrap();
+    let runs = mock.terminals();
+    assert_eq!(runs.len(), 2, "rerun asks nothing");
+    assert_eq!(runs[1], runs[0]);
+}
+
 /// Полный путь клика по иконке запуска у `.globl`-функции: gutter action -> команда плагина ->
-/// argv, который хост добавляет к конфигурации -> симулятор, исполняющий именно эту функцию.
+/// argv терминала -> симулятор, исполняющий именно эту функцию.
 #[test]
 fn gutter_run_icon_executes_the_exported_function_in_the_simulator() {
     let source = include_str!("../examples/riscv-app/functions.asm");
-    let path = "/project/functions.asm".to_owned();
+    let path = "/project/functions.asm";
     // Мок-проект виртуальный, а симулятор читает файл с диска: кладём копию во временный файл.
     let disk = std::env::temp_dir().join(format!("riscv-gutter-{}.asm", std::process::id()));
     std::fs::write(&disk, source).unwrap();
-    let mock =
-        MockHost::install().with_capabilities(&["project.read", "editor.read", "storage", "process:openidea-riscv"]);
-    mock.add_file(&path, source);
-    mock.open_editor(&path, "riscv", source, &[]);
+    let mock = MockHost::install().with_capabilities(CAPABILITIES);
+    mock.add_file(path, source);
+    mock.open_editor(path, "riscv", source, &[]);
     let mut plugin = Riscv;
-    let configs: Vec<_> = plugin.configurations("/project").into_iter().filter(|c| c.args[0] == path).collect();
-    mock.set_run_configurations(configs.clone());
 
-    let actions = plugin.gutter_actions(&Document { path: path.clone(), text: source.into(), ..Default::default() });
+    let actions = plugin.gutter_actions(&Document { path: path.into(), text: source.into(), ..Default::default() });
     assert_eq!(
         actions.iter().map(|a| (a.line, a.argument.as_deref(), a.tooltip.as_str())).collect::<Vec<_>>(),
         [(4, Some("sum"), "Run sum()"), (8, Some("sum32"), "Run sum32()"), (12, Some("poly"), "Run poly()")]
@@ -294,19 +290,16 @@ fn gutter_run_icon_executes_the_exported_function_in_the_simulator() {
         assert!(manifest.contains(&format!("id = \"{}\"", action.command)), "{} is not contributed", action.command);
         mock.answer_next_prompt(Some(&[input]));
         plugin.run_command(&action.command, &mock.invocation(), action.argument.as_deref()).unwrap();
-        let (_, config_id, run_args, debug) = mock.configuration_runs().pop().unwrap();
-        assert!(!debug);
-        let config = configs.iter().find(|c| c.id == config_id).expect("run uses the file's configuration");
-        assert_eq!(config.program, "openidea-riscv");
-        // Хост запускает program с args конфигурации и дописанными аргументами запуска.
-        let mut argv: Vec<String> = config.args.iter().chain(&run_args).cloned().collect();
+        let run = mock.terminals().pop().expect("the icon starts the simulator");
+        assert_eq!(run.program, "openidea-riscv");
+        let mut argv = run.args.clone();
         assert_eq!(argv[0], path);
         argv[0] = disk.to_str().unwrap().into();
-        assert_eq!(ide_riscv::cli(argv), 0, "simulator rejects {:?}", run_args);
-        let function = &run_args[run_args.iter().position(|a| a == "--function").unwrap() + 1];
+        assert_eq!(ide_riscv::cli(argv), 0, "simulator rejects {:?}", run.args);
+        let function = &run.args[run.args.iter().position(|a| a == "--function").unwrap() + 1];
         assert_eq!(Some(function.as_str()), action.argument.as_deref());
         let values: Vec<u64> =
-            run_args.iter().skip_while(|a| *a != "--").skip(1).map(|v| ide_riscv::integer(v).unwrap()).collect();
+            run.args.iter().skip_while(|a| *a != "--").skip(1).map(|v| ide_riscv::integer(v).unwrap()).collect();
         let program = ide_riscv::Program::assemble(source).unwrap();
         let mut machine = ide_riscv::Machine::new(program, Some(function), &values).unwrap();
         let outcome =
@@ -314,6 +307,7 @@ fn gutter_run_icon_executes_the_exported_function_in_the_simulator() {
         assert!(outcome.returned);
         assert_eq!(outcome.value, expected, "{function}({input})");
     }
-    assert_eq!(mock.configuration_runs().len(), 3);
+    assert_eq!(mock.terminals().len(), 3);
+    assert!(mock.notifications().is_empty(), "{:?}", mock.notifications());
     std::fs::remove_file(&disk).ok();
 }
