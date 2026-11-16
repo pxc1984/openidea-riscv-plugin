@@ -58,73 +58,80 @@ impl Plugin for Riscv {
         if !matches!(id, "run" | "run-at-caret" | "rerun") {
             return Err(Error::NotFound(id.into()));
         }
-        if id == "rerun"
-            && let Some(last) = host::storage::get(LAST_RUN)?
-        {
-            let mut parts = last.split('\u{1f}').map(str::to_owned);
-            let config = parts.next().unwrap_or_default();
-            return host::start_run(&config, &parts.collect::<Vec<_>>(), false).map(Some);
-        }
-        let editor = ctx.editor().ok_or_else(|| Error::Invalid("Open a RISC-V assembly file".into()))?;
-        if editor.language() != "riscv" {
-            return Err(Error::Invalid("Open a RISC-V assembly file".into()));
-        }
-        let path = editor.path();
-        let source = editor.document()?.text;
-        let found = functions(&source);
-        let caret = editor.selections()?.first().and_then(|r| text::offset(&source, r.start));
-        let at_caret =
-            (id == "run-at-caret").then(|| caret.and_then(|c| found.iter().rfind(|f| f.offset <= c))).flatten();
-        let selected = if let Some(function) = at_caret {
-            Some(function)
-        } else if let Some(name) = arg {
-            Some(found.iter().find(|f| f.name == name).ok_or_else(|| Error::NotFound(name.into()))?)
-        } else {
-            let items: Vec<_> = std::iter::once(PickItem::new("", "Run program"))
-                .chain(found.iter().map(|f| {
-                    let signature = f.parameters.as_ref().map_or(String::new(), |p| p.join(", "));
-                    PickItem::new(&f.name, &format!("{}({signature})", f.name))
-                        .description(&format!("line {}", f.line + 1))
-                }))
-                .collect();
-            let Some(name) = host::pick("RISC-V: Run File or Function", &items)? else {
+        // Хост гасит ошибку команды из иконки в гуттере (только console.warn), поэтому сообщаем сами,
+        // иначе неудачный запуск выглядит как "ничего не произошло".
+        launch(id, ctx, arg).or_else(|error| {
+            host::notify(openidea_plugin::NotificationLevel::Error, "RISC-V", &format!("Run failed: {error}"));
+            Ok(None)
+        })
+    }
+}
+
+fn launch(id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
+    if id == "rerun"
+        && let Some(last) = host::storage::get(LAST_RUN)?
+    {
+        let mut parts = last.split('\u{1f}').map(str::to_owned);
+        let config = parts.next().unwrap_or_default();
+        return host::start_run(&config, &parts.collect::<Vec<_>>(), false).map(Some);
+    }
+    let editor = ctx.editor().ok_or_else(|| Error::Invalid("Open a RISC-V assembly file".into()))?;
+    if editor.language() != "riscv" {
+        return Err(Error::Invalid("Open a RISC-V assembly file".into()));
+    }
+    let path = editor.path();
+    let source = editor.document()?.text;
+    let found = functions(&source);
+    let caret = editor.selections()?.first().and_then(|r| text::offset(&source, r.start));
+    let at_caret = (id == "run-at-caret").then(|| caret.and_then(|c| found.iter().rfind(|f| f.offset <= c))).flatten();
+    let selected = if let Some(function) = at_caret {
+        Some(function)
+    } else if let Some(name) = arg {
+        Some(found.iter().find(|f| f.name == name).ok_or_else(|| Error::NotFound(name.into()))?)
+    } else {
+        let items: Vec<_> = std::iter::once(PickItem::new("", "Run program"))
+            .chain(found.iter().map(|f| {
+                let signature = f.parameters.as_ref().map_or(String::new(), |p| p.join(", "));
+                PickItem::new(&f.name, &format!("{}({signature})", f.name)).description(&format!("line {}", f.line + 1))
+            }))
+            .collect();
+        let Some(name) = host::pick("RISC-V: Run File or Function", &items)? else {
+            return Ok(None);
+        };
+        found.iter().find(|f| f.name == name)
+    };
+    let mut args = Vec::new();
+    if let Some(function) = selected {
+        args.extend(["--function".into(), function.name.clone()]);
+        let key = format!("arguments:{path}:{}", function.name);
+        let remembered = host::storage::get(&key)?.unwrap_or_default();
+        let prompt = match &function.parameters {
+            Some(p) => format!("Arguments for {}({})", function.name, p.join(", ")),
+            None => format!("Integer arguments for {} (a0–a7, then stack)", function.name),
+        };
+        let mut initial = remembered;
+        loop {
+            let Some(input) = host::input(&prompt, Some(&initial))? else {
                 return Ok(None);
             };
-            found.iter().find(|f| f.name == name)
-        };
-        let mut args = Vec::new();
-        if let Some(function) = selected {
-            args.extend(["--function".into(), function.name.clone()]);
-            let key = format!("arguments:{path}:{}", function.name);
-            let remembered = host::storage::get(&key)?.unwrap_or_default();
-            let prompt = match &function.parameters {
-                Some(p) => format!("Arguments for {}({})", function.name, p.join(", ")),
-                None => format!("Integer arguments for {} (a0–a7, then stack)", function.name),
-            };
-            let mut initial = remembered;
-            loop {
-                let Some(input) = host::input(&prompt, Some(&initial))? else {
-                    return Ok(None);
-                };
-                match arguments(&input, function.parameters.as_ref().map(Vec::len)) {
-                    Ok(values) => {
-                        host::storage::set(&key, &input)?;
-                        args.push("--".into());
-                        args.extend(values);
-                        break;
-                    }
-                    Err(error) => {
-                        host::notify(openidea_plugin::NotificationLevel::Warning, "RISC-V", &error.to_string());
-                        initial = input;
-                    }
+            match arguments(&input, function.parameters.as_ref().map(Vec::len)) {
+                Ok(values) => {
+                    host::storage::set(&key, &input)?;
+                    args.push("--".into());
+                    args.extend(values);
+                    break;
+                }
+                Err(error) => {
+                    host::notify(openidea_plugin::NotificationLevel::Warning, "RISC-V", &error.to_string());
+                    initial = input;
                 }
             }
         }
-        let config = config_id(&path);
-        let last = std::iter::once(config.as_str()).chain(args.iter().map(String::as_str)).collect::<Vec<_>>();
-        host::storage::set(LAST_RUN, &last.join("\u{1f}"))?;
-        host::start_run(&config, &args, false).map(Some)
     }
+    let config = config_id(&path);
+    let last = std::iter::once(config.as_str()).chain(args.iter().map(String::as_str)).collect::<Vec<_>>();
+    host::storage::set(LAST_RUN, &last.join("\u{1f}"))?;
+    host::start_run(&config, &args, false).map(Some)
 }
 
 impl RunConfigurations for Riscv {
