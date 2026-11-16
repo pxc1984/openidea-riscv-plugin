@@ -58,7 +58,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
 name = "ide-riscv"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "indexmap"
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "openidea-plugin-openidea-riscv"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ide-riscv",
  "openidea-plugin",
