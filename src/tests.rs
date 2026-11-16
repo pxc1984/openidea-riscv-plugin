@@ -424,3 +424,82 @@ fn formatter_aligns_trailing_comments_of_consecutive_lines() {
     let first = openidea_plugin::Range { start: at(text, "li", 0), end: at(text, "li", 2) };
     assert_eq!(reformat(text, Some(first), true), "        li      a0, 1       # a\naddi a0,a0,100 # b\n");
 }
+
+#[test]
+fn release_tags_compare_as_versions() {
+    for (tag, installed, newer) in [
+        ("v0.1.6", "0.1.5", true),
+        ("v0.2.0", "0.1.9", true),
+        ("v0.1.10", "0.1.9", true),
+        ("v1.0.0", "0.99.99", true),
+        ("v0.1.5", "0.1.5", false),
+        ("v0.1.4", "0.1.5", false),
+        ("0.1.6", "0.1.5", true),
+        ("latest", "0.1.5", false),
+        ("v0.1.6-rc1", "0.1.5", false),
+        ("v0.1", "0.1.5", false),
+        ("v0.1.6.1", "0.1.5", false),
+    ] {
+        assert_eq!(update::is_newer(tag, installed), newer, "{tag} vs {installed}");
+    }
+}
+
+/// The mock host and the number of requests to GitHub so far.
+fn github(tag: &'static str) -> (MockHost, std::rc::Rc<std::cell::Cell<u32>>) {
+    let mock = MockHost::install().with_capabilities(&["storage", "net:api.github.com"]);
+    let fetches = std::rc::Rc::new(std::cell::Cell::new(0));
+    let counter = fetches.clone();
+    mock.on_fetch(move |request| {
+        counter.set(counter.get() + 1);
+        assert!(request.url.ends_with("/repos/pxc1984/openidea-riscv-plugin/releases/latest"), "{}", request.url);
+        assert!(request.headers.iter().any(|(k, _)| k == "User-Agent"));
+        Ok(openidea_plugin::HttpResponse {
+            status: 200,
+            headers: vec![],
+            body: format!("{{\n  \"url\": \"x\",\n  \"tag_name\": \"{tag}\",\n  \"draft\": false\n}}").into_bytes(),
+        })
+    });
+    (mock, fetches)
+}
+
+#[test]
+fn newer_release_is_offered_once_per_interval_and_downloads_the_package() {
+    let (mock, fetches) = github("v9.0.0");
+    update::check("0.1.5", 1_000).unwrap();
+    let offers = mock.notifications_with_actions();
+    assert_eq!(offers.len(), 1);
+    assert!(offers[0].notification.body.contains("v9.0.0") && offers[0].notification.body.contains("0.1.5"));
+    let action = &offers[0].actions[0];
+    assert!(include_str!("../plugin.toml").contains(&format!("id = \"{}\"", action.command)));
+    plugin_run(&mock, &action.command);
+    assert_eq!(mock.opened_urls(), [update::DOWNLOAD_URL]);
+
+    update::check("0.1.5", 1_000 + update::CHECK_INTERVAL_SECS - 1).unwrap();
+    assert_eq!((fetches.get(), mock.notifications_with_actions().len()), (1, 1), "re-activation in one session");
+    update::check("0.1.5", 1_000 + update::CHECK_INTERVAL_SECS).unwrap();
+    assert_eq!((fetches.get(), mock.notifications_with_actions().len()), (2, 2), "next start offers again");
+}
+
+fn plugin_run(mock: &MockHost, command: &str) {
+    assert_eq!(Riscv.run_command(command, &mock.invocation(), None).unwrap(), None);
+}
+
+#[test]
+fn current_or_unreadable_releases_and_refused_network_stay_silent() {
+    for tag in ["v0.1.5", "v0.1.4", "nightly"] {
+        let (mock, fetches) = github(tag);
+        update::check("0.1.5", 1_000).unwrap();
+        assert_eq!(fetches.get(), 1);
+        assert!(mock.notifications_with_actions().is_empty() && mock.notifications().is_empty(), "{tag}");
+    }
+    let mock = MockHost::install().with_capabilities(&["storage", "net:api.github.com"]);
+    mock.on_fetch(|_| Ok(openidea_plugin::HttpResponse { status: 404, headers: vec![], body: b"{}".to_vec() }));
+    update::check("0.1.5", 1_000).unwrap();
+    assert!(mock.notifications_with_actions().is_empty());
+
+    let mock = MockHost::install().with_capabilities(&["storage"]);
+    assert!(update::check("0.1.5", 1_000).is_err());
+    let context = openidea_plugin::Context { plugin_version: "0.1.5".into(), ..Default::default() };
+    Riscv.activate(&context).expect("activation survives a failed check");
+    assert!(mock.notifications().is_empty() && mock.notifications_with_actions().is_empty());
+}

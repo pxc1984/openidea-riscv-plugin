@@ -14,6 +14,10 @@ cargo install --path runner --locked
 
 In Settings → Plugins → Install Plugin from Disk, select this plugin's folder. Allow `process:openidea-riscv` to enable execution. If the IDE cannot find the helper on PATH, choose its absolute executable path in the plugin's permissions in Settings. Highlighting and completion work without the process permission. For remote projects, install the helper and grant its executable on the server.
 
+## Updates
+
+When the IDE starts, the plugin asks GitHub for the release marked **Latest** (drafts and pre-releases are skipped). If it is newer than the installed version, a notification offers **Download**, which saves `openidea.riscv.oiplugin` from that release; install it with Settings → Plugins → Install Plugin from Disk. The plugin cannot install itself. GitHub is asked at most once in 12 hours, because the IDE also reactivates idle plugins during a session. The check needs the optional `net:api.github.com` permission and stays silent without it or without network. **RISC-V: Download Latest Plugin Release** downloads the package at any time.
+
 ## Use
 
 While editing, the plugin works without the helper:

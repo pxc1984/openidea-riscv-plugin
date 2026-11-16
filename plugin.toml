@@ -7,11 +7,11 @@ license = "Apache-2.0"
 categories = ["languages"]
 engines.openidea = "^1.4"
 wasm = "dist/plugin.wasm"
-activation = ["on-language:riscv", "on-command:*"]
+activation = ["on-language:riscv", "on-command:*", "on-startup-finished"]
 
 [capabilities]
 required = ["editor.read", "storage"]
-optional = ["process:openidea-riscv"]
+optional = ["process:openidea-riscv", "net:api.github.com"]
 
 [[contributes.languages]]
 path = "languages/riscv.toml"
@@ -35,6 +35,11 @@ id = "rerun"
 title = "RISC-V: Rerun Last"
 category = "RISC-V"
 icon = "rerun"
+
+[[contributes.commands]]
+id = "update"
+title = "RISC-V: Download Latest Plugin Release"
+category = "RISC-V"
 
 [[contributes.menus]]
 menu = "editor.context"

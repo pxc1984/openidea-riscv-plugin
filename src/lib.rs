@@ -2,6 +2,7 @@ mod docs;
 mod editor;
 mod format;
 mod language;
+mod update;
 
 use editor::Context;
 use language::{blank_comments, functions, highlights};
@@ -60,7 +61,20 @@ fn arguments(text: &str, count: Option<usize>) -> Result<Vec<String>, Error> {
 }
 
 impl Plugin for Riscv {
+    fn activate(&mut self, ctx: &openidea_plugin::Context) -> Result<(), Error> {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        // Проверка обновлений не должна мешать активации: без сети или разрешения просто молчим.
+        if let Err(error) = update::check(&ctx.plugin_version, now) {
+            host::log(openidea_plugin::LogLevel::Debug, &format!("update check: {error}"));
+        }
+        Ok(())
+    }
+
     fn run_command(&mut self, id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
+        if id == update::COMMAND {
+            host::open_url(update::DOWNLOAD_URL)?;
+            return Ok(None);
+        }
         if !matches!(id, "run" | "run-at-caret" | "rerun") {
             return Err(Error::NotFound(id.into()));
         }
