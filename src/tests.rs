@@ -385,3 +385,42 @@ fn formatted_code_computes_the_same_results() {
     let names = |text: &str| functions(text).into_iter().map(|f| (f.name, f.line, f.parameters)).collect::<Vec<_>>();
     assert_eq!(names(&formatted), names(messy));
 }
+
+#[test]
+fn formatter_aligns_trailing_comments_of_consecutive_lines() {
+    for (input, spaces, tabs) in [
+        (
+            "li a0,1 # one\naddi a0,a0,100 # add\nret # back\n",
+            "        li      a0, 1       # one\n        addi    a0, a0, 100 # add\n        ret                 # back\n",
+            "\tli\ta0, 1\t\t# one\n\taddi\ta0, a0, 100\t# add\n\tret\t\t\t# back\n",
+        ),
+        (
+            "li a0,1 # a\nret\nmv a0,a1 # b\n",
+            "        li      a0, 1 # a\n        ret\n        mv      a0, a1 # b\n",
+            "\tli\ta0, 1\t# a\n\tret\n\tmv\ta0, a1\t# b\n",
+        ),
+        (
+            "li a0,1 # a\n\nla a0,message # b\n",
+            "        li      a0, 1 # a\n\n        la      a0, message # b\n",
+            "\tli\ta0, 1\t# a\n\n\tla\ta0, message\t# b\n",
+        ),
+        (
+            "li a0,1 # a\n# only\nli a1,22 # b\n",
+            "        li      a0, 1 # a\n# only\n        li      a1, 22 # b\n",
+            "\tli\ta0, 1\t# a\n# only\n\tli\ta1, 22\t# b\n",
+        ),
+        (
+            "done: # end\nli /* x */ a0,1 # kept\nret # r\n",
+            "done: # end\nli /* x */ a0,1 # kept\n        ret # r\n",
+            "done:\t# end\nli /* x */ a0,1 # kept\n\tret\t# r\n",
+        ),
+    ] {
+        assert_eq!(reformat(input, None, true), spaces, "{input:?}");
+        assert_eq!(reformat(spaces, None, true), spaces, "not idempotent: {spaces:?}");
+        assert_eq!(reformat(input, None, false), tabs, "{input:?}");
+        assert_eq!(reformat(tabs, None, false), tabs, "not idempotent: {tabs:?}");
+    }
+    let text = "li a0,1 # a\naddi a0,a0,100 # b\n";
+    let first = openidea_plugin::Range { start: at(text, "li", 0), end: at(text, "li", 2) };
+    assert_eq!(reformat(text, Some(first), true), "        li      a0, 1       # a\naddi a0,a0,100 # b\n");
+}
