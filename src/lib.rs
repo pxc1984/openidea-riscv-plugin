@@ -1,5 +1,6 @@
 mod docs;
 mod editor;
+mod format;
 mod language;
 
 use editor::Context;
@@ -7,13 +8,13 @@ use language::{blank_comments, functions, highlights};
 use openidea_plugin::diagnostics::DiagnosticsProvider;
 use openidea_plugin::hover::{Hover, HoverProvider};
 use openidea_plugin::language_features::{
-    Document, GutterAction, Highlight as Occurrence, LanguageFeatures, Parameter, ParameterLabel, Signature,
-    SignatureHelp,
+    Document, FormatOptions, GutterAction, Highlight as Occurrence, LanguageFeatures, Parameter, ParameterLabel,
+    Signature, SignatureHelp,
 };
 use openidea_plugin::providers::{CompletionItem, CompletionKind, Providers};
 use openidea_plugin::syntax::{Fold, FoldKind, Symbol, SymbolKind, SyntaxProvider, Token};
 use openidea_plugin::{
-    Diagnostic, Error, Invocation, Location, PickItem, Plugin, Position, host, register_plugin, text,
+    Diagnostic, Error, Invocation, Location, PickItem, Plugin, Position, Range, TextEdit, host, register_plugin, text,
 };
 
 #[derive(Default)]
@@ -338,6 +339,15 @@ impl DiagnosticsProvider for Riscv {
 }
 
 impl LanguageFeatures for Riscv {
+    fn format(&mut self, doc: &Document, range: Option<Range>, options: FormatOptions) -> Result<Vec<TextEdit>, Error> {
+        let lines = range.map_or(0..usize::MAX, |r| r.start.line as usize..r.end.line as usize + 1);
+        let indent = format::Indent { tab_size: options.tab_size.max(1) as usize, tabs: !options.insert_spaces };
+        Ok(format::edits(&doc.text, lines, &indent)
+            .into_iter()
+            .map(|(span, text)| TextEdit { range: editor::span_range(&doc.text, span), text })
+            .collect())
+    }
+
     fn signature_help(&mut self, doc: &Document, at: Position) -> Option<SignatureHelp> {
         let offset = text::offset(&doc.text, at)?;
         let code = blank_comments(&doc.text);

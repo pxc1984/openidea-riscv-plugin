@@ -57,5 +57,6 @@ kinds = [
   "signature-help",
   "document-highlights",
   "gutter-actions",
+  "formatting",
 ]
 languages = ["riscv"]

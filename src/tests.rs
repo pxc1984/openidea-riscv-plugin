@@ -311,3 +311,77 @@ fn gutter_run_icon_executes_the_exported_function_in_the_simulator() {
     assert!(mock.notifications().is_empty(), "{:?}", mock.notifications());
     std::fs::remove_file(&disk).ok();
 }
+
+fn reformat(text: &str, range: Option<openidea_plugin::Range>, insert_spaces: bool) -> String {
+    let options = FormatOptions { tab_size: 8, insert_spaces };
+    let mut edits = Riscv.format(&doc(text), range, options).unwrap();
+    edits.sort_by_key(|e| std::cmp::Reverse(text::offset(text, e.range.start).unwrap()));
+    let mut out = text.to_owned();
+    for e in edits {
+        out.replace_range(
+            text::offset(text, e.range.start).unwrap()..text::offset(text, e.range.end).unwrap(),
+            &e.text,
+        );
+    }
+    out
+}
+
+#[test]
+fn formatter_aligns_labels_mnemonics_and_operands() {
+    for (input, expected) in [
+        ("sum: add a0,a0,a1\n", "sum:    add     a0, a0, a1\n"),
+        ("  ret  \n", "        ret\n"),
+        (".text\n", "        .text\n"),
+        (".globl   sum,poly\n", "        .globl sum, poly\n"),
+        ("message: .asciz \"a, b: #c\"\n", "message: .asciz \"a, b: #c\"\n"),
+        ("very_long_label: li a0,1\n", "very_long_label: li a0, 1\n"),
+        ("fcvt.l.d a0,ft0\n", "        fcvt.l.d a0, ft0\n"),
+        ("ld a0 , 8( sp )\n", "        ld      a0, 8( sp )\n"),
+        ("1:addi t0,t0,1  # step\n", "1:      addi    t0, t0, 1 # step\n"),
+        ("done:\n", "done:\n"),
+        ("a: b: ret\n", "a: b:   ret\n"),
+        (".byte ',', 'x'\n", "        .byte ',', 'x'\n"),
+        ("   # int64_t f(void)   \n", "   # int64_t f(void)\n"),
+        ("/* li a0,1\n  still comment */\n", "/* li a0,1\n  still comment */\n"),
+        ("li /* keep */ a0,1\n", "li /* keep */ a0,1\n"),
+        ("li a0,1\r\nret\r\n", "        li      a0, 1\r\n        ret\r\n"),
+        ("\n\n", "\n\n"),
+        ("ret", "        ret"),
+    ] {
+        assert_eq!(reformat(input, None, true), expected, "{input:?}");
+        assert_eq!(reformat(expected, None, true), expected, "not idempotent: {expected:?}");
+    }
+}
+
+#[test]
+fn formatter_uses_tabs_when_the_editor_does() {
+    assert_eq!(reformat("sum: add a0,a0,a1\n.text\n", None, false), "sum:\tadd\ta0, a0, a1\n\t.text\n");
+    assert_eq!(reformat("fcvt.l.d a0,ft0\n", None, false), "\tfcvt.l.d\ta0, ft0\n");
+}
+
+#[test]
+fn formatter_keeps_examples_and_formats_only_the_selection() {
+    for text in [include_str!("../examples/riscv-app/functions.asm"), include_str!("../examples/riscv-app/hello.asm")] {
+        assert_eq!(reformat(text, None, true), text);
+    }
+    let text = "li a0,1\nli a1,2\nli a2,3\n";
+    let second = openidea_plugin::Range { start: at(text, "li a1", 0), end: at(text, "li a1", 3) };
+    assert_eq!(reformat(text, Some(second), true), "li a0,1\n        li      a1, 2\nli a2,3\n");
+}
+
+#[test]
+fn formatted_code_computes_the_same_results() {
+    let messy = "  .text\n.globl sum,poly\n# int64_t sum(int64_t a, int64_t b)\nsum:add a0,a0,a1\n ret\n// int64_t poly(int64_t x)\npoly: mul a0 ,a0,a0 # square\n ret\n";
+    let formatted = reformat(messy, None, false);
+    assert_ne!(formatted, messy);
+    for (function, args, expected) in [("sum", [40, 2], 42), ("poly", [7, 0], 49)] {
+        let run = |source: &str| {
+            let program = ide_riscv::Program::assemble(source).unwrap();
+            let mut machine = ide_riscv::Machine::new(program, Some(function), &args).unwrap();
+            machine.run(1000, &mut std::io::Cursor::new(Vec::new()), &mut Vec::new(), &mut Vec::new()).unwrap().value
+        };
+        assert_eq!((run(messy), run(&formatted)), (expected, expected), "{function}");
+    }
+    let names = |text: &str| functions(text).into_iter().map(|f| (f.name, f.line, f.parameters)).collect::<Vec<_>>();
+    assert_eq!(names(&formatted), names(messy));
+}

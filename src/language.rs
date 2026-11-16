@@ -76,13 +76,21 @@ pub struct Function {
 
 /// `text` with comments and string literals replaced by spaces, keeping offsets and newlines.
 pub fn blank_comments(text: &str) -> String {
+    mask(text, b' ')
+}
+
+/// `text` with comments replaced by spaces and string literals by `string_fill`, keeping offsets and newlines.
+pub fn mask(text: &str, string_fill: u8) -> String {
     let mut code = text.as_bytes().to_vec();
     for t in highlights(text) {
-        if matches!(t.kind, Highlight::Comment | Highlight::String) {
-            for b in &mut code[t.range] {
-                if *b != b'\n' {
-                    *b = b' ';
-                }
+        let fill = match t.kind {
+            Highlight::Comment => b' ',
+            Highlight::String => string_fill,
+            _ => continue,
+        };
+        for b in &mut code[t.range] {
+            if *b != b'\n' {
+                *b = fill;
             }
         }
     }
