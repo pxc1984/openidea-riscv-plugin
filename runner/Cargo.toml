@@ -1,7 +1,7 @@
 [package]
 name = "ide-riscv"
 description = "RV64 educational assembler and source simulator for the OpenIDEA RISC-V plugin"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Igor Mamaev <igor.mamaev1@gmail.com>"]
