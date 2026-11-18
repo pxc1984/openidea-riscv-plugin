@@ -97,13 +97,13 @@ pub fn mask(text: &str, string_fill: u8) -> String {
     String::from_utf8(code).unwrap()
 }
 
-pub fn functions(text: &str) -> Vec<Function> {
-    let code = blank_comments(text);
-    let mut exports = HashSet::new();
+/// Names exported with `.globl`/`.global` or marked `@function` with `.type`.
+fn exports(code: &str) -> HashSet<String> {
+    let mut exported = HashSet::new();
     for line in code.lines().map(str::trim) {
         let (directive, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         if matches!(directive, ".globl" | ".global") {
-            exports.extend(
+            exported.extend(
                 rest.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()).map(str::to_owned),
             );
         }
@@ -111,9 +111,20 @@ pub fn functions(text: &str) -> Vec<Function> {
             && let Some((name, ty)) = rest.split_once(',')
             && ty.trim().trim_start_matches(['@', '%']) == "function"
         {
-            exports.insert(name.trim().to_owned());
+            exported.insert(name.trim().to_owned());
         }
     }
+    exported
+}
+
+/// A candidate worth a Run button: exported, documented with a C signature, or a `main`/`_start`.
+fn is_runnable(f: &Function, exported: &HashSet<String>) -> bool {
+    exported.contains(&f.name) || f.parameters.is_some() || matches!(f.name.as_str(), "main" | "_start")
+}
+
+/// Functions defined by labels in the `.text` sections of `code`, with byte offsets in `text`
+/// and parameters parsed from the comment line above each label.
+fn labeled_functions(text: &str, code: &str) -> Vec<Function> {
     static LABEL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"^\s*([A-Za-z_$][\w.$]*)\s*:").unwrap());
     static SIGNATURE: OnceLock<Regex> = OnceLock::new();
@@ -157,13 +168,15 @@ pub fn functions(text: &str) -> Vec<Function> {
         }
         offset += raw.len();
     }
-    let marked = candidates
-        .iter()
-        .any(|f| exports.contains(&f.name) || f.parameters.is_some() || matches!(f.name.as_str(), "main" | "_start"));
-    if marked {
-        candidates.retain(|f| {
-            exports.contains(&f.name) || f.parameters.is_some() || matches!(f.name.as_str(), "main" | "_start")
-        });
+    candidates
+}
+
+pub fn functions(text: &str) -> Vec<Function> {
+    let code = blank_comments(text);
+    let exported = exports(&code);
+    let mut candidates = labeled_functions(text, &code);
+    if candidates.iter().any(|f| is_runnable(f, &exported)) {
+        candidates.retain(|f| is_runnable(f, &exported));
     } else {
         candidates.truncate(1);
     }

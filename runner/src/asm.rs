@@ -7,6 +7,8 @@ pub(crate) const STACK: u64 = 0x7ff0_0000;
 pub(crate) const STACK_SIZE: usize = 1024 * 1024;
 pub(crate) const RETURN: u64 = 0xffff_ffff_ffff_fffc;
 
+const SECTIONS: [&str; 4] = [".text", ".rodata", ".data", ".bss"];
+
 #[derive(Clone)]
 pub(crate) struct Instruction {
     pub op: String,
@@ -32,6 +34,14 @@ pub struct Program {
     numeric: Vec<(String, usize, u64)>,
 }
 
+/// Состояние прохода ассемблера: текущая секция и отложенные значения данных,
+/// которые разрешаются символами после разбора всех строк.
+#[derive(Default)]
+struct ParseState {
+    section: usize,
+    data: Vec<(usize, usize, usize, Data)>,
+}
+
 impl Program {
     pub fn assemble(source: &str) -> Result<Self> {
         let mut program = Self {
@@ -46,183 +56,12 @@ impl Program {
             ],
         };
         let lines = strip_comments(source)?;
-        let mut section = 0;
-        let mut data = Vec::new();
+        let mut state = ParseState::default();
         for (index, raw) in lines.iter().enumerate() {
             let line = index + 1;
-            let process = (|| -> Result<()> {
-                let mut text = raw.trim();
-                while let Some(colon) = text.find(':') {
-                    let name = text[..colon].trim();
-                    if !valid_name(name) {
-                        break;
-                    }
-                    let address = program.regions[section].start + program.regions[section].data.len() as u64;
-                    if name.bytes().all(|c| c.is_ascii_digit()) {
-                        program.numeric.push((name.to_owned(), line, address));
-                    } else if program.symbols.insert(name.to_owned(), Symbol::Address(address)).is_some() {
-                        return Err(Error::new(format!("duplicate symbol: {name}")));
-                    }
-                    text = text[colon + 1..].trim_start();
-                }
-                if text.is_empty() {
-                    return Ok(());
-                }
-                let split = text.find(char::is_whitespace).unwrap_or(text.len());
-                let op = &text[..split];
-                let operands = text[split..].trim();
-                let args = arguments(operands)?;
-                let address = program.regions[section].start + program.regions[section].data.len() as u64;
-                let constant = |value: &str| program.eval(value, address, line);
-                if op.starts_with('.') {
-                    let size = match op {
-                        ".text" => {
-                            section = 0;
-                            return Ok(());
-                        }
-                        ".data" => {
-                            section = 2;
-                            return Ok(());
-                        }
-                        ".bss" => {
-                            section = 3;
-                            return Ok(());
-                        }
-                        ".rodata" => {
-                            section = 1;
-                            return Ok(());
-                        }
-                        ".section" => {
-                            section = match args.first().map(String::as_str) {
-                                Some(s) if s == ".text" || s.starts_with(".text.") => 0,
-                                Some(s) if s == ".rodata" || s.starts_with(".rodata.") => 1,
-                                Some(s) if s == ".data" || s.starts_with(".data.") => 2,
-                                Some(s) if s == ".bss" || s.starts_with(".bss.") => 3,
-                                _ => return Err(Error::new("supported sections: .text, .rodata, .data, .bss")),
-                            };
-                            return Ok(());
-                        }
-                        ".equ" | ".equiv" | ".eqv" => {
-                            let pair = if args.len() == 2 {
-                                args.clone()
-                            } else {
-                                operands.splitn(2, char::is_whitespace).map(|s| s.trim().to_owned()).collect()
-                            };
-                            if pair.len() != 2 || !valid_name(&pair[0]) {
-                                return Err(Error::new("expected .equ NAME, expression"));
-                            }
-                            if program
-                                .symbols
-                                .insert(pair[0].clone(), Symbol::Expression(pair[1].clone(), address, line))
-                                .is_some()
-                            {
-                                return Err(Error::new(format!("duplicate symbol: {}", pair[0])));
-                            }
-                            return Ok(());
-                        }
-                        ".globl" | ".global" | ".type" | ".size" | ".option" | ".ident" | ".attribute" => return Ok(()),
-                        ".align" | ".p2align" | ".balign" => {
-                            let n = constant(args.first().ok_or_else(|| Error::new("missing alignment"))?)?;
-                            let alignment = if op == ".balign" {
-                                n
-                            } else {
-                                1u64.checked_shl(u32::try_from(n).unwrap_or(u32::MAX)).unwrap_or(0)
-                            };
-                            if alignment == 0 || !alignment.is_power_of_two() || alignment > LIMIT as u64 {
-                                return Err(Error::new("invalid alignment"));
-                            }
-                            ((alignment - address % alignment) % alignment) as usize
-                        }
-                        ".zero" | ".skip" | ".space" => {
-                            let count = constant(args.first().ok_or_else(|| Error::new("missing size"))?)?;
-                            usize::try_from(count).map_err(|_| Error::new("allocation too large"))?
-                        }
-                        ".ascii" | ".asciz" | ".asciiz" | ".string" => {
-                            let mut bytes = Vec::new();
-                            for arg in &args {
-                                if !arg.starts_with('"') || !arg.ends_with('"') || arg.len() < 2 {
-                                    return Err(Error::new("expected quoted string"));
-                                }
-                                bytes.extend(expr::unescape(&arg[1..arg.len() - 1])?);
-                                if op != ".ascii" {
-                                    bytes.push(0);
-                                }
-                            }
-                            data.push((section, program.regions[section].data.len(), line, Data::Bytes(bytes.clone())));
-                            bytes.len()
-                        }
-                        ".byte" | ".half" | ".short" | ".2byte" | ".word" | ".long" | ".4byte" | ".dword" | ".quad"
-                        | ".8byte" | ".float" | ".double" => {
-                            let width = match op {
-                                ".byte" => 1,
-                                ".half" | ".short" | ".2byte" => 2,
-                                ".word" | ".long" | ".4byte" | ".float" => 4,
-                                _ => 8,
-                            };
-                            data.push((
-                                section,
-                                program.regions[section].data.len(),
-                                line,
-                                Data::Values(args.clone(), width, op.to_owned()),
-                            ));
-                            width * args.len()
-                        }
-                        _ => return Err(Error::new(format!("unsupported directive: {op}"))),
-                    };
-                    let allocated: usize = program.regions.iter().map(|r| r.data.len()).sum();
-                    if size > LIMIT.saturating_sub(allocated) {
-                        return Err(Error::new("data exceeds 64 MiB simulator limit"));
-                    }
-                    let region = &mut program.regions[section];
-                    region.data.resize(region.data.len() + size, 0);
-                    if matches!(op, ".skip" | ".space") && args.len() > 1 {
-                        let value = program.eval(&args[1], address, line)? as u8;
-                        let region = &mut program.regions[section];
-                        let start = region.data.len() - size;
-                        region.data[start..].fill(value);
-                    }
-                } else {
-                    if section != 0 {
-                        return Err(Error::new("instructions must be in .text"));
-                    }
-                    if !crate::cpu::supported(op) {
-                        return Err(Error::new(format!("unsupported instruction: {op}")));
-                    }
-                    if !address.is_multiple_of(4) {
-                        return Err(Error::new("instruction address is not aligned to 4 bytes"));
-                    }
-                    let instruction = Instruction { op: op.to_owned(), args, line };
-                    crate::cpu::validate(&instruction)?;
-                    program.code.insert(address, instruction);
-                    program.regions[section].data.extend_from_slice(&[0; 4]);
-                }
-                Ok(())
-            })();
-            process.map_err(|error| error.at(line))?;
+            program.process_line(raw, line, &mut state).map_err(|error| error.at(line))?;
         }
-        for (section, offset, line, item) in data {
-            let address = program.regions[section].start + offset as u64;
-            let bytes = match item {
-                Data::Bytes(bytes) => bytes,
-                Data::Values(args, width, op) => {
-                    let mut bytes = Vec::new();
-                    for arg in args {
-                        let value = match op.as_str() {
-                            ".float" => u64::from(
-                                arg.parse::<f32>().map_err(|_| Error::new("invalid float").at(line))?.to_bits(),
-                            ),
-                            ".double" => {
-                                arg.parse::<f64>().map_err(|_| Error::new("invalid double").at(line))?.to_bits()
-                            }
-                            _ => program.eval(&arg, address + bytes.len() as u64, line).map_err(|e| e.at(line))?,
-                        };
-                        bytes.extend_from_slice(&value.to_le_bytes()[..width]);
-                    }
-                    bytes
-                }
-            };
-            program.regions[section].data[offset..offset + bytes.len()].copy_from_slice(&bytes);
-        }
+        program.resolve_data(&state.data)?;
         // Resolve constants even when unused, so cycles and unknown symbols are diagnostics.
         for name in program.symbols.keys() {
             program.lookup(name, TEXT, 0, 0)?;
@@ -231,6 +70,208 @@ impl Program {
             return Err(Error::new("no executable instructions"));
         }
         Ok(program)
+    }
+
+    fn current_address(&self, state: &ParseState) -> u64 {
+        self.regions[state.section].start + self.regions[state.section].data.len() as u64
+    }
+
+    fn process_line(&mut self, raw: &str, line: usize, state: &mut ParseState) -> Result<()> {
+        let mut text = raw.trim();
+        while let Some(colon) = text.find(':') {
+            let name = text[..colon].trim();
+            if !valid_name(name) {
+                break;
+            }
+            let address = self.current_address(state);
+            if name.bytes().all(|c| c.is_ascii_digit()) {
+                self.numeric.push((name.to_owned(), line, address));
+            } else if self.symbols.insert(name.to_owned(), Symbol::Address(address)).is_some() {
+                return Err(Error::new(format!("duplicate symbol: {name}")));
+            }
+            text = text[colon + 1..].trim_start();
+        }
+        if text.is_empty() {
+            return Ok(());
+        }
+        let split = text.find(char::is_whitespace).unwrap_or(text.len());
+        let op = &text[..split];
+        let operands = text[split..].trim();
+        let args = arguments(operands)?;
+        let address = self.current_address(state);
+        if op.starts_with('.') {
+            let size = self.directive(op, &args, operands, address, line, state)?;
+            let allocated: usize = self.regions.iter().map(|r| r.data.len()).sum();
+            if size > LIMIT.saturating_sub(allocated) {
+                return Err(Error::new("data exceeds 64 MiB simulator limit"));
+            }
+            let region = &mut self.regions[state.section];
+            region.data.resize(region.data.len() + size, 0);
+            if matches!(op, ".skip" | ".space") && args.len() > 1 {
+                let value = self.eval(&args[1], address, line)? as u8;
+                let region = &mut self.regions[state.section];
+                let start = region.data.len() - size;
+                region.data[start..].fill(value);
+            }
+            return Ok(());
+        }
+        self.instruction(op, args, address, line, state.section)
+    }
+
+    fn directive(
+        &mut self,
+        op: &str,
+        args: &[String],
+        operands: &str,
+        address: u64,
+        line: usize,
+        state: &mut ParseState,
+    ) -> Result<usize> {
+        let size = match op {
+            ".text" => {
+                state.section = 0;
+                0
+            }
+            ".data" => {
+                state.section = 2;
+                0
+            }
+            ".bss" => {
+                state.section = 3;
+                0
+            }
+            ".rodata" => {
+                state.section = 1;
+                0
+            }
+            ".section" => {
+                let name = args.first().map(String::as_str).unwrap_or("");
+                let matches = |prefix: &str| name == prefix || name.starts_with(&format!("{prefix}."));
+                state.section = SECTIONS
+                    .iter()
+                    .position(|section| matches(section))
+                    .ok_or_else(|| Error::new("supported sections: .text, .rodata, .data, .bss"))?;
+                0
+            }
+            ".equ" | ".equiv" | ".eqv" => {
+                self.define_constant(args, operands, address, line)?;
+                0
+            }
+            ".globl" | ".global" | ".type" | ".size" | ".option" | ".ident" | ".attribute" => 0,
+            ".align" | ".p2align" | ".balign" => {
+                let n = self.eval(args.first().ok_or_else(|| Error::new("missing alignment"))?, address, line)?;
+                let alignment = if op == ".balign" {
+                    n
+                } else {
+                    1u64.checked_shl(u32::try_from(n).unwrap_or(u32::MAX)).unwrap_or(0)
+                };
+                if alignment == 0 || !alignment.is_power_of_two() || alignment > LIMIT as u64 {
+                    return Err(Error::new("invalid alignment"));
+                }
+                ((alignment - address % alignment) % alignment) as usize
+            }
+            ".zero" | ".skip" | ".space" => {
+                let count = self.eval(args.first().ok_or_else(|| Error::new("missing size"))?, address, line)?;
+                usize::try_from(count).map_err(|_| Error::new("allocation too large"))?
+            }
+            ".ascii" | ".asciz" | ".asciiz" | ".string" => {
+                let mut bytes = Vec::new();
+                for arg in args {
+                    if !arg.starts_with('"') || !arg.ends_with('"') || arg.len() < 2 {
+                        return Err(Error::new("expected quoted string"));
+                    }
+                    bytes.extend(expr::unescape(&arg[1..arg.len() - 1])?);
+                    if op != ".ascii" {
+                        bytes.push(0);
+                    }
+                }
+                state.data.push((
+                    state.section,
+                    self.regions[state.section].data.len(),
+                    line,
+                    Data::Bytes(bytes.clone()),
+                ));
+                bytes.len()
+            }
+            ".byte" | ".half" | ".short" | ".2byte" | ".word" | ".long" | ".4byte" | ".dword" | ".quad" | ".8byte"
+            | ".float" | ".double" => {
+                let width = match op {
+                    ".byte" => 1,
+                    ".half" | ".short" | ".2byte" => 2,
+                    ".word" | ".long" | ".4byte" | ".float" => 4,
+                    _ => 8,
+                };
+                state.data.push((
+                    state.section,
+                    self.regions[state.section].data.len(),
+                    line,
+                    Data::Values(args.to_vec(), width, op.to_owned()),
+                ));
+                width * args.len()
+            }
+            other => return Err(Error::new(format!("unsupported directive: {other}"))),
+        };
+        Ok(size)
+    }
+
+    fn define_constant(&mut self, args: &[String], operands: &str, address: u64, line: usize) -> Result<()> {
+        let pair = if args.len() == 2 {
+            args.to_vec()
+        } else {
+            operands.splitn(2, char::is_whitespace).map(|s| s.trim().to_owned()).collect()
+        };
+        if pair.len() != 2 || !valid_name(&pair[0]) {
+            return Err(Error::new("expected .equ NAME, expression"));
+        }
+        if self.symbols.insert(pair[0].clone(), Symbol::Expression(pair[1].clone(), address, line)).is_some() {
+            return Err(Error::new(format!("duplicate symbol: {}", pair[0])));
+        }
+        Ok(())
+    }
+
+    fn instruction(&mut self, op: &str, args: Vec<String>, address: u64, line: usize, section: usize) -> Result<()> {
+        if section != 0 {
+            return Err(Error::new("instructions must be in .text"));
+        }
+        if !crate::cpu::supported(op) {
+            return Err(Error::new(format!("unsupported instruction: {op}")));
+        }
+        if !address.is_multiple_of(4) {
+            return Err(Error::new("instruction address is not aligned to 4 bytes"));
+        }
+        let instruction = Instruction { op: op.to_owned(), args, line };
+        crate::cpu::validate(&instruction)?;
+        self.code.insert(address, instruction);
+        self.regions[0].data.extend_from_slice(&[0; 4]);
+        Ok(())
+    }
+
+    fn resolve_data(&mut self, data: &[(usize, usize, usize, Data)]) -> Result<()> {
+        for &(section, offset, line, ref item) in data {
+            let address = self.regions[section].start + offset as u64;
+            let bytes = match item {
+                Data::Bytes(bytes) => bytes.clone(),
+                Data::Values(args, width, op) => {
+                    let (width, op) = (*width, op.as_str());
+                    let mut bytes = Vec::new();
+                    for arg in args {
+                        let value = match op {
+                            ".float" => u64::from(
+                                arg.parse::<f32>().map_err(|_| Error::new("invalid float").at(line))?.to_bits(),
+                            ),
+                            ".double" => {
+                                arg.parse::<f64>().map_err(|_| Error::new("invalid double").at(line))?.to_bits()
+                            }
+                            _ => self.eval(arg, address + bytes.len() as u64, line)?,
+                        };
+                        bytes.extend_from_slice(&value.to_le_bytes()[..width]);
+                    }
+                    bytes
+                }
+            };
+            self.regions[section].data[offset..offset + bytes.len()].copy_from_slice(&bytes);
+        }
+        Ok(())
     }
 
     pub(crate) fn eval(&self, text: &str, address: u64, line: usize) -> Result<u64> {

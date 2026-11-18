@@ -3,6 +3,8 @@ name = "openidea-plugin-openidea-riscv"
 version = "0.1.6"
 edition = "2024"
 publish = false
+authors = ["Igor Mamaev <igor.mamaev1@gmail.com>"]
+license = "Apache-2.0"
 
 [workspace]
 exclude = ["runner"]

@@ -4,6 +4,7 @@ description = "RV64 educational assembler and source simulator for the OpenIDEA 
 version = "0.1.6"
 edition = "2024"
 license = "Apache-2.0"
+authors = ["Igor Mamaev <igor.mamaev1@gmail.com>"]
 
 [workspace]
 

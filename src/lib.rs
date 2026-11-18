@@ -41,23 +41,28 @@ fn arguments(text: &str, count: Option<usize>) -> Result<Vec<String>, Error> {
         return Err(Error::Invalid(format!("Expected {} integer arguments", count.unwrap())));
     }
     for arg in &args {
-        let unsigned = arg.strip_prefix(['+', '-']).unwrap_or(arg);
-        let (digits, radix) = if let Some(s) = unsigned.strip_prefix("0x").or_else(|| unsigned.strip_prefix("0X")) {
-            (s, 16)
-        } else if let Some(s) = unsigned.strip_prefix("0b").or_else(|| unsigned.strip_prefix("0B")) {
-            (s, 2)
-        } else if unsigned.starts_with('0') && unsigned.len() > 1 {
-            (unsigned, 8)
-        } else {
-            (unsigned, 10)
-        };
-        let valid_digits = !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix));
-        let value = u64::from_str_radix(digits, radix).ok();
-        if !valid_digits || value.is_none() || (arg.starts_with('-') && value.unwrap() > (1u64 << 63)) {
-            return Err(Error::Invalid("Enter 64-bit integers in decimal, hexadecimal, binary or octal".into()));
-        }
+        integer(arg)?;
     }
     Ok(args.into_iter().map(str::to_owned).collect())
+}
+
+/// One 64-bit integer argument: decimal, `0x`/`0X`, `0b`/`0B` or octal, with an optional sign.
+fn integer(arg: &str) -> Result<u64, Error> {
+    let unsigned = arg.strip_prefix(['+', '-']).unwrap_or(arg);
+    let (digits, radix) = if let Some(s) = unsigned.strip_prefix("0x").or_else(|| unsigned.strip_prefix("0X")) {
+        (s, 16)
+    } else if let Some(s) = unsigned.strip_prefix("0b").or_else(|| unsigned.strip_prefix("0B")) {
+        (s, 2)
+    } else if unsigned.starts_with('0') && unsigned.len() > 1 {
+        (unsigned, 8)
+    } else {
+        (unsigned, 10)
+    };
+    let valid_digits = !digits.is_empty() && digits.chars().all(|c| c.is_digit(radix));
+    match u64::from_str_radix(digits, radix).ok() {
+        Some(value) if valid_digits && !(arg.starts_with('-') && value > (1u64 << 63)) => Ok(value),
+        _ => Err(Error::Invalid("Enter 64-bit integers in decimal, hexadecimal, binary or octal".into())),
+    }
 }
 
 impl Plugin for Riscv {
@@ -304,11 +309,11 @@ impl Providers for Riscv {
                         ));
                     }
                 }
-                let functions = functions(&doc.text);
+                let defined = functions(&doc.text);
                 let mut seen = std::collections::HashSet::new();
                 for label in editor::labels(&code) {
                     if editor::valid_name(&label.name) && seen.insert(label.name.clone()) {
-                        let f = functions.iter().find(|f| f.name == label.name);
+                        let f = defined.iter().find(|f| f.name == label.name);
                         let kind = if label.constant {
                             CompletionKind::Constant
                         } else if f.is_some() {

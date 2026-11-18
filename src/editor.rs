@@ -90,7 +90,7 @@ pub fn parse_line(code: &str, start: usize) -> Line<'_> {
 }
 
 fn line_starts(code: &str) -> impl Iterator<Item = usize> + '_ {
-    std::iter::once(0).chain(code.match_indices('\n').map(|(i, _)| i + 1)).filter(move |i| *i <= code.len())
+    std::iter::once(0).chain(code.match_indices('\n').map(|(i, _)| i + 1))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -204,8 +204,9 @@ pub fn hover(text: &str, at: usize) -> Option<(String, Span<usize>)> {
     if in_comment(text, &code, at) {
         return None;
     }
-    let span = word_at(&code, at)?;
-    let mut span = span;
+    let Some(mut span) = word_at(&code, at) else {
+        return None;
+    };
     let word = &code[span.clone()];
     if let Some(value) = number(word) {
         if span.start > 0 && code.as_bytes()[span.start - 1] == b'-' {
@@ -264,6 +265,11 @@ pub fn definition(text: &str, at: usize) -> Option<Span<usize>> {
     Some(target..target + name.len())
 }
 
+/// Whether the first operand of a syntax like `rd, rs1, rs2` is a destination the instruction writes.
+fn writes_destination(syntax: &str) -> bool {
+    ["rd", "fd", "[rd"].iter().copied().any(|prefix| syntax.starts_with(prefix))
+}
+
 /// Every occurrence of the symbol under the caret, and whether it is written there.
 pub fn occurrences(text: &str, at: usize) -> Vec<(Span<usize>, bool)> {
     let code = blank_comments(text);
@@ -288,8 +294,7 @@ pub fn occurrences(text: &str, at: usize) -> Vec<(Span<usize>, bool)> {
             }
         }
         let Some((op, _)) = line.op else { continue };
-        let writes = docs::instruction(op)
-            .is_some_and(|i| i.syntax.starts_with("rd") || i.syntax.starts_with("fd") || i.syntax.starts_with("[rd"));
+        let writes = docs::instruction(op).is_some_and(|i| writes_destination(i.syntax));
         for (index, (operand, operand_at)) in line.operands.iter().enumerate() {
             let mut i = 0;
             let bytes = operand.as_bytes();

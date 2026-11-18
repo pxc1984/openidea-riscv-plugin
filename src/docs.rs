@@ -270,20 +270,23 @@ pub fn instruction(op: &str) -> Option<Instruction> {
     }
 }
 
+/// ABI name of every integer register `x0`..`x31`; `fp` is absent because it aliases `s0`.
+const INTEGER_ABI: [&str; 32] = [
+    "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "s2",
+    "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
+];
+
+/// ABI name of every float register `f0`..`f31`.
+const FLOAT_ABI: [&str; 32] = [
+    "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5",
+    "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7", "fs8", "fs9", "fs10", "fs11", "ft8", "ft9", "ft10", "ft11",
+];
+
 pub fn register(name: &str) -> Option<String> {
-    let int = [
-        "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7",
-        "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11", "t3", "t4", "t5", "t6",
-    ];
-    let fp = [
-        "ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7", "fs0", "fs1", "fa0", "fa1", "fa2", "fa3", "fa4", "fa5",
-        "fa6", "fa7", "fs2", "fs3", "fs4", "fs5", "fs6", "fs7", "fs8", "fs9", "fs10", "fs11", "ft8", "ft9", "ft10",
-        "ft11",
-    ];
     let name = if name == "fp" { "s0" } else { name };
-    let (n, float) = if let Some(n) = int.iter().position(|r| *r == name) {
+    let (n, float) = if let Some(n) = INTEGER_ABI.iter().position(|r| *r == name) {
         (n, false)
-    } else if let Some(n) = fp.iter().position(|r| *r == name) {
+    } else if let Some(n) = FLOAT_ABI.iter().position(|r| *r == name) {
         (n, true)
     } else {
         let (prefix, digits) = name.split_at(1.min(name.len()));
@@ -294,7 +297,7 @@ pub fn register(name: &str) -> Option<String> {
             _ => return None,
         }
     };
-    let abi = if float { fp[n] } else { int[n] };
+    let abi = if float { FLOAT_ABI[n] } else { INTEGER_ABI[n] };
     let role = if float {
         match &abi[..2] {
             "ft" => "temporary, caller-saved",

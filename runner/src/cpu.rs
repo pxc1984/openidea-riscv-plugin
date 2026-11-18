@@ -406,7 +406,7 @@ impl Machine {
                 }
             }
             _ if atomic_op(op).is_some() => {
-                let (name, width) = atomic_op(op).unwrap();
+                let Some((name, width)) = atomic_op(op) else { unreachable!("guarded by atomic_op above") };
                 let address_index = if name == "lr" { 1 } else { 2 };
                 let address = self.address(arg(address_index)?, instruction.line)?;
                 aligned(address, width)?;
@@ -868,6 +868,7 @@ impl Machine {
 fn sign(value: u64, bits: u32) -> u64 {
     (((value << (64 - bits)) as i64) >> (64 - bits)) as u64
 }
+
 fn aligned(address: u64, width: usize) -> Result<()> {
     if !address.is_multiple_of(width as u64) {
         Err(Error::new(format!("unaligned {width}-byte access at 0x{address:x}")))
