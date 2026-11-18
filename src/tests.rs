@@ -162,6 +162,92 @@ fn outline_ranges_end_at_the_last_instruction() {
     assert!(text[outline[2].range.clone()].ends_with("ret"));
 }
 
+/// The completion snippets for teaching patterns arrive as real snippets in mnemonic context.
+#[test]
+fn completion_offers_teaching_snippets_in_mnemonic_context() {
+    let mut plugin = Riscv;
+    let text = "main: \n";
+    let items = plugin.completion(&doc(text), at(text, ": \n", 2), None);
+    for (label, detail) in [
+        ("test main", Some("main reading test arguments")),
+        ("branchless select", Some("a0 = cond ? a : b")),
+        ("branchless min", Some("a0 = min(a2, a3)")),
+        ("loop", Some("counted loop")),
+        ("sum array", Some("sum of a .word array")),
+        ("struct", Some("fields of struct")),
+        ("data", Some(".data section")),
+    ] {
+        let it = items.iter().find(|i| i.label == label).unwrap_or_else(|| panic!("no `{label}` snippet"));
+        assert_eq!(it.kind, Some(CompletionKind::Snippet), "{label}");
+        assert!(it.snippet, "{label}");
+        assert_eq!(it.sort_text.as_deref(), Some(format!("3{label}").as_str()), "{label}");
+        assert!(it.detail.as_deref().unwrap_or_default().starts_with(detail.unwrap()), "{label}");
+        assert!(it.insert_text.starts_with("        "), "{label}: {:?}", it.insert_text);
+        assert!(it.insert_text.contains("$0"), "final tab stop in {label}");
+        assert!(it.insert_text.contains("${1:"), "tab stops in {label}");
+    }
+}
+
+#[test]
+fn run_tests_prompts_remembers_the_directory_and_passes_it_to_the_simulator() {
+    let (mock, mut plugin) = setup();
+    mock.answer_next_prompt(Some(&["/project/tests"]));
+    assert_eq!(plugin.run_command("run-tests", &mock.invocation(), None).unwrap(), None);
+    let runs = mock.terminals();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].title, "RISC-V: a b; c.asm (tests)");
+    assert_eq!(runs[0].program, "openidea-riscv");
+    assert_eq!(runs[0].args, ["/project/a b; c.asm".to_owned(), "--tests".into(), "/project/tests".into()]);
+    assert_eq!(host::storage::get("tests:/project/a b; c.asm").unwrap().as_deref(), Some("/project/tests"));
+
+    // Dismissing the prompt cancels without a terminal and without a failure notification.
+    mock.answer_next_prompt(None);
+    assert!(plugin.run_command("run-tests", &mock.invocation(), None).unwrap().is_none());
+    assert_eq!(mock.terminals().len(), 1);
+    assert!(mock.notifications().is_empty(), "{:?}", mock.notifications());
+}
+
+/// The snippets expand into real, assembling programs: placeholders become their defaults.
+#[test]
+fn snippets_assemble_in_the_simulator() {
+    let expand = |text: &str| {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(at) = rest.find("${") {
+            out.push_str(&rest[..at]);
+            let (body, tail) = rest[at + 2..].split_once('}').unwrap();
+            out.push_str(body.split_once(':').map_or(body, |(_, d)| d));
+            rest = tail;
+        }
+        out + &rest.replace("$0", "")
+    };
+    for (label, _, insert) in snippets() {
+        let expanded = expand(insert);
+        match label {
+            // Data alone has no code yet; the simulator reports that as a normal empty program.
+            "data" => {
+                assert!(
+                    ide_riscv::Program::assemble(&expanded).is_err_and(|e| e.message == "no executable instructions"),
+                    "{label}: {expanded:?}"
+                );
+                assert!(ide_riscv::Program::assemble(&format!("{expanded}        .text\nmain:   ret")).is_ok());
+            }
+            _ => assert!(ide_riscv::Program::assemble(&expanded).is_ok(), "{label}: {expanded:?}"),
+        }
+    }
+    // The `test main` loop really reads arguments until -1, calls and prints: run it end to end.
+    let source = expand(snippets().find(|(l, ..)| *l == "test main").unwrap().2)
+        .replace("        call    name", "        call    double")
+        + "# int64_t double(int64_t a)\ndouble: add     a0, a0, a0\n        ret\n";
+    let program = ide_riscv::Program::assemble(&source).unwrap();
+    let mut machine = ide_riscv::Machine::new(program, None, &[]).unwrap();
+    let mut output = Vec::new();
+    // Two full test cases (one line per argument), then EOF reads as -1 and main exits.
+    let input = "3\n-2\n7\n5\n0\n1\n".to_owned().into_bytes();
+    let outcome = machine.run(10_000, &mut std::io::Cursor::new(input), &mut output, &mut Vec::new()).unwrap();
+    assert!(!outcome.returned && outcome.exit_code == 0 && output == b"6\n10\n", "{outcome:?} {output:?}");
+}
+
 const CAPABILITIES: &[&str] = &["editor.read", "storage", "process:openidea-riscv"];
 
 fn setup() -> (MockHost, Riscv) {

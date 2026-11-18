@@ -204,9 +204,7 @@ pub fn hover(text: &str, at: usize) -> Option<(String, Span<usize>)> {
     if in_comment(text, &code, at) {
         return None;
     }
-    let Some(mut span) = word_at(&code, at) else {
-        return None;
-    };
+    let mut span = word_at(&code, at)?;
     let word = &code[span.clone()];
     if let Some(value) = number(word) {
         if span.start > 0 && code.as_bytes()[span.start - 1] == b'-' {

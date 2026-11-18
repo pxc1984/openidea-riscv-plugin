@@ -27,6 +27,7 @@ enum Symbol {
     Expression(String, u64, usize),
 }
 
+#[derive(Clone)]
 pub struct Program {
     pub(crate) code: BTreeMap<u64, Instruction>,
     pub(crate) regions: Vec<Region>,

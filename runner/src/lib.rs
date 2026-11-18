@@ -4,7 +4,8 @@ mod cpu;
 mod expr;
 
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, Cursor, Write};
+use std::path::PathBuf;
 
 pub use asm::Program;
 pub use cpu::{Machine, Outcome};
@@ -51,6 +52,19 @@ pub fn cli(args: Vec<String>) -> i32 {
             return 2;
         }
     };
+    if let Some(tests_dir) = &options.tests {
+        return match run_test_suite(&options.file, tests_dir, options.max_steps) {
+            Ok((code, report)) => {
+                print!("{report}");
+                io::stdout().flush().ok();
+                code
+            }
+            Err(error) => {
+                eprintln!("{}:{error}", options.file);
+                1
+            }
+        };
+    }
     match run_file(&options.file, options.function.as_deref(), &options.values, options.max_steps) {
         Ok(code) => code,
         Err(error) => {
@@ -65,6 +79,7 @@ struct Options {
     function: Option<String>,
     values: Vec<u64>,
     max_steps: u64,
+    tests: Option<String>,
 }
 
 fn parse_options(args: Vec<String>) -> Result<Options> {
@@ -72,11 +87,13 @@ fn parse_options(args: Vec<String>) -> Result<Options> {
     let mut function = None;
     let mut values = Vec::new();
     let mut max_steps = DEFAULT_MAX_STEPS;
+    let mut tests = None;
     let mut iter = args.into_iter();
     // Lookahead-разбор опций: итератор читается и в заголовке, и внутри веток.
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--function" => function = Some(iter.next().ok_or_else(|| Error::new("--function requires a label"))?),
+            "--tests" => tests = Some(iter.next().ok_or_else(|| Error::new("--tests requires a directory"))?),
             "--max-steps" => {
                 max_steps = iter
                     .next()
@@ -95,9 +112,85 @@ fn parse_options(args: Vec<String>) -> Result<Options> {
         }
     }
     let file = file.ok_or_else(|| {
-        Error::new("usage: openidea-riscv <file.asm> [--function label] [--max-steps N] [-- integer arguments]")
+        Error::new(
+            "usage: openidea-riscv <file.asm> [--function label] [--max-steps N] [--tests DIR] [-- integer arguments]",
+        )
     })?;
-    Ok(Options { file, function, values, max_steps })
+    Ok(Options { file, function, values, max_steps, tests })
+}
+
+/// Расширения файлов тестов: `NN.dat` — вход, `NN.ans` — эталонный stdout.
+const TEST_INPUT_EXT: &str = "dat";
+const TEST_ANSWER_EXT: &str = "ans";
+const MISSING_LINE: &str = "<no line>";
+
+/// Прогон программы по каталогу тестов `NN.dat`/`NN.ans` (вход `_start`/`main`).
+/// Возвращает (код выхода: 0 — все прошли, 1 — есть FAIL, отчёт).
+pub fn run_test_suite(file: &str, tests_dir: &str, max_steps: u64) -> Result<(i32, String)> {
+    let text = std::fs::read_to_string(file).map_err(|e| Error::new(e.to_string()))?;
+    let program = Program::assemble(&text)?;
+    let names = test_names(tests_dir)?;
+    let mut passed = 0usize;
+    let mut report = String::new();
+    for name in &names {
+        match run_single_test(&program, tests_dir, name, max_steps) {
+            Ok(None) => {
+                passed += 1;
+                report.push_str(&format!("PASS {name}\n"));
+            }
+            Ok(Some(reason)) => report.push_str(&format!("FAIL {name}{reason}\n")),
+            Err(error) => return Err(error),
+        }
+    }
+    report.push_str(&format!("{passed}/{} tests passed\n", names.len()));
+    Ok((i32::from(passed < names.len()), report))
+}
+
+/// Имена тестов в каталоге: стемы файлов `*.dat`, отсортированные.
+fn test_names(tests_dir: &str) -> Result<Vec<String>> {
+    let entries = std::fs::read_dir(tests_dir).map_err(|e| Error::new(e.to_string()))?;
+    let mut names = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|e| Error::new(e.to_string()))?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some(TEST_INPUT_EXT) {
+            let stem = path
+                .file_stem()
+                .and_then(|e| e.to_str())
+                .ok_or_else(|| Error::new(format!("invalid test name: {}", path.display())))?;
+            names.push(stem.to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Запуск одного теста: None — вывод совпал, Some — краткое описание расхождения.
+fn run_single_test(program: &Program, tests_dir: &str, name: &str, max_steps: u64) -> Result<Option<String>> {
+    let input_path = PathBuf::from(tests_dir).join(format!("{name}.{TEST_INPUT_EXT}"));
+    let answer_path = PathBuf::from(tests_dir).join(format!("{name}.{TEST_ANSWER_EXT}"));
+    let input = std::fs::read(&input_path).map_err(|e| Error::new(format!("{}: {e}", input_path.display())))?;
+    let expected =
+        std::fs::read_to_string(&answer_path).map_err(|e| Error::new(format!("{}: {e}", answer_path.display())))?;
+    let mut machine = Machine::new(program.clone(), None, &[])?;
+    let mut output = Vec::new();
+    match machine.run(max_steps, &mut Cursor::new(input), &mut output, &mut io::sink()) {
+        Ok(_) => Ok(first_mismatch(&expected, &String::from_utf8_lossy(&output))),
+        Err(error) => Ok(Some(format!(": runtime error: {error}"))),
+    }
+}
+
+/// Первое расхождение построчно (обе стороны триммируются); None — совпало.
+fn first_mismatch(expected: &str, got: &str) -> Option<String> {
+    let expected_lines: Vec<&str> = expected.lines().map(str::trim).collect();
+    let got_lines: Vec<&str> = got.lines().map(str::trim).collect();
+    for index in 0..expected_lines.len().max(got_lines.len()) {
+        let expected = expected_lines.get(index).copied().unwrap_or(MISSING_LINE);
+        let got = got_lines.get(index).copied().unwrap_or(MISSING_LINE);
+        if expected != got {
+            return Some(format!(": line {}: expected '{expected}', got '{got}'", index + 1));
+        }
+    }
+    None
 }
 
 fn run_file(file: &str, function: Option<&str>, values: &[u64], max_steps: u64) -> Result<i32> {

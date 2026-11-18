@@ -80,7 +80,7 @@ impl Plugin for Riscv {
             host::open_url(update::DOWNLOAD_URL)?;
             return Ok(None);
         }
-        if !matches!(id, "run" | "run-at-caret" | "rerun") {
+        if !matches!(id, "run" | "run-at-caret" | "run-tests" | "rerun") {
             return Err(Error::NotFound(id.into()));
         }
         // Хост гасит ошибку команды из иконки в гуттере (только console.warn), поэтому сообщаем сами,
@@ -107,6 +107,17 @@ fn launch(id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String
     let path = editor.path();
     if host::open_editors()?.iter().any(|e| e.path == path && e.dirty) {
         return Err(Error::Invalid("Save the file first: the simulator runs it from disk".into()));
+    }
+    if id == "run-tests" {
+        // Каталог с тестами (NN.dat / NN.ans) запоминаем на файл, как аргументы функции.
+        let key = format!("tests:{path}");
+        let initial = host::storage::get(&key)?.unwrap_or_default();
+        let Some(dir) = host::input("Directory with tests (NN.dat / NN.ans)", Some(&initial))? else {
+            return Ok(None);
+        };
+        host::storage::set(&key, &dir)?;
+        let file_name = path.rsplit(['/', '\\']).next().unwrap_or(&path);
+        return run_simulator(&format!("RISC-V: {file_name} (tests)"), &[path, "--tests".into(), dir]);
     }
     let source = editor.document()?.text;
     let found = functions(&source);
@@ -235,6 +246,49 @@ fn registers() -> impl Iterator<Item = String> {
         .chain(["x", "f"].into_iter().flat_map(|p| (0..32).map(move |n| format!("{p}{n}"))))
 }
 
+/// Insert templates for common teaching patterns, in the same style as the `function` snippet:
+/// tab stops pick the callee, the label, the array size, `$0` leaves the caret at the end.
+fn snippets() -> impl Iterator<Item = (&'static str, &'static str, &'static str)> {
+    [
+        (
+            "test main",
+            "main reading test arguments (syscall 5) until -1 into a1–a3, calling a0–a2 arguments and printing results",
+            "        .text\n        .globl  main\nmain:   li      a7, 5           # a1 = next test argument\n        ecall\n        mv      a1, a0\n        li      t0, -1\n        beq     a1, t0, done\n${2:        li      a7, 5\n        ecall\n        mv      a2, a0\n}${3:        li      a7, 5\n        ecall\n        mv      a3, a0\n}        mv      a0, a1          # shift a1–a3 to the a0–a2 of the callee\n        mv      a1, a2\n        mv      a2, a3\n        call    ${1:name}\n        li      a7, 1           # print result\n        ecall\n        li      a7, 11          # newline\n        li      a0, '\\n'\n        ecall\n        j       main\ndone:   li      a7, 10          # exit\n        ecall\n$0",
+        ),
+        (
+            "branchless select",
+            "a0 = cond ? a : b without branches: slt + sub + mul",
+            "        # ${1:a0 = a2 if a0 < a1 else a3}\n        slt     t0, a0, a1\n        sub     t1, a2, a3\n        mul     t1, t1, t0\n        add     a0, a3, t1\n        $0",
+        ),
+        (
+            "branchless min",
+            "a0 = min(a2, a3) via the sign mask of a - b (sub, srai, and, add)",
+            "        # ${1:a0 = min(a2, a3)}\n        sub     t1, a2, a3      # diff = a - b\n        srai    t2, t1, 63      # mask = all ones when a < b\n        and     t2, t2, t1\n        add     a0, a3, t2      # b + diff when a < b, else b\n        $0",
+        ),
+        (
+            "loop",
+            "counted loop: counter in t0, body, bnez",
+            "        li      t0, ${1:count}\n1:      ${2:# body}\n        addi    t0, t0, -1\n        bnez    t0, 1b\n$0",
+        ),
+        (
+            "sum array",
+            "sum of a .word array in memory: la, index, lw, add",
+            "        la      t0, ${1:array}\n        li      t1, ${2:length}\n        li      t2, 0           # index\n        li      a0, 0\n1:      bge     t2, t1, 3f\n        slli    t3, t2, 2       # byte offset\n        add     t3, t3, t0\n        lw      t4, 0(t3)\n        add     a0, a0, t4\n        addi    t2, t2, 1\n        j       1b\n3:      $0",
+        ),
+        (
+            "struct",
+            "fields of struct {uint32_t count; uint32_t *data; uint32_t summ} through an a0 pointer",
+            "        # ${1:struct in a0}\n        ld      t0, 0(a0)       # count\n        ld      t1, 8(a0)       # data pointer\n        sd      t2, 16(a0)      # summ\n        $0",
+        ),
+        (
+            "data",
+            ".data section with an aligned .word array",
+            "        .data\n        .align  ${1:2}\n${2:array}: .word ${3:0, 0, 0}\n$0",
+        ),
+    ]
+    .into_iter()
+}
+
 impl Providers for Riscv {
     fn completion(&mut self, doc: &Document, at: Position, _: Option<&str>) -> Vec<CompletionItem> {
         let Some(offset) = text::offset(&doc.text, at) else {
@@ -277,6 +331,12 @@ impl Providers for Riscv {
                 syscall.insert_text = "li a7, 10\necall".into();
                 syscall.filter_text = Some("ecall exit".into());
                 items.push(syscall);
+                for (label, detail, insert) in snippets() {
+                    let mut it = item(label, CompletionKind::Snippet, Some(detail.into()), None, "3");
+                    it.insert_text = insert.into();
+                    it.snippet = true;
+                    items.push(it);
+                }
             }
             Context::Operand { op, index, before } => {
                 let info = docs::instruction(op);

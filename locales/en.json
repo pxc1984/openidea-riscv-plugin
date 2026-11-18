@@ -4,5 +4,6 @@
   "RISC-V: Run File or Function": "RISC-V: Run File or Function",
   "Run program": "Run program",
   "RISC-V: Run Function at Caret": "RISC-V: Run Function at Caret",
-  "RISC-V: Rerun Last": "RISC-V: Rerun Last"
+  "RISC-V: Rerun Last": "RISC-V: Rerun Last",
+  "RISC-V: Run Tests in Directory": "RISC-V: Run Tests in Directory"
 }

@@ -3,6 +3,9 @@ use crate::{Error, Result};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read, Write};
 
+/// Дополнение старших 32 бит при хранении f32 в 64-битном регистре.
+const FLOAT32_PADDING: u64 = 0xffff_ffff_0000_0000;
+
 const OPS: &str = "li la lla lui auipc mv nop ret j jr jal jalr call tail \
 add sub addi addw subw addiw neg negw sext.b sext.h sext.w zext.b zext.h zext.w \
 sll srl sra slli srli srai sllw srlw sraw slliw srliw sraiw \
@@ -95,6 +98,8 @@ pub struct Machine {
     steps: u64,
     entry: String,
     reservation: Option<(u64, usize)>,
+    /// Неразобранный остаток ввода для scanf-семантики syscall 5/6/7.
+    input_buffer: String,
 }
 
 #[derive(Debug)]
@@ -133,6 +138,7 @@ impl Machine {
             steps: 0,
             entry,
             reservation: None,
+            input_buffer: String::new(),
         };
         machine.registers[1] = RETURN;
         let extra = values
@@ -614,19 +620,25 @@ impl Machine {
             }
             5..=7 => {
                 output.flush().map_err(io)?;
-                let mut line = String::new();
-                input.read_line(&mut line).map_err(io)?;
+                // Ввод как scanf: числа через пробелы/переводы строк; EOF — не ошибка,
+                // возвращаем -1 соответствующего типа.
+                let Some(token) = self.take_input_token(input)? else {
+                    match self.registers[17] {
+                        5 => self.registers[10] = u64::MAX,
+                        6 => self.floating[10] = FLOAT32_PADDING | u64::from((-1.0f32).to_bits()),
+                        _ => self.floating[10] = (-1.0f64).to_bits(),
+                    }
+                    return Ok(None);
+                };
                 match self.registers[17] {
-                    5 => self.registers[10] = crate::integer(line.trim())?,
+                    5 => self.registers[10] = crate::integer(&token)?,
                     6 => {
-                        self.floating[10] = 0xffff_ffff_0000_0000
-                            | u64::from(
-                                line.trim().parse::<f32>().map_err(|_| Error::new("expected float input"))?.to_bits(),
-                            )
+                        self.floating[10] = FLOAT32_PADDING
+                            | u64::from(token.parse::<f32>().map_err(|_| Error::new("expected float input"))?.to_bits())
                     }
                     _ => {
                         self.floating[10] =
-                            line.trim().parse::<f64>().map_err(|_| Error::new("expected double input"))?.to_bits()
+                            token.parse::<f64>().map_err(|_| Error::new("expected double input"))?.to_bits()
                     }
                 }
             }
@@ -698,6 +710,23 @@ impl Machine {
             number => return Err(Error::new(format!("unsupported environment call: {number}"))),
         }
         Ok(None)
+    }
+
+    /// Достаёт очередной токен ввода (scanf-семантика): пробельные разделители
+    /// пропускаются, буфер добирается построчно. None — полный EOF (0 байт).
+    fn take_input_token(&mut self, input: &mut dyn BufRead) -> Result<Option<String>> {
+        loop {
+            let rest = self.input_buffer.trim_start();
+            if let Some(token) = rest.split_whitespace().next() {
+                let token_len = token.len();
+                let consumed = self.input_buffer.len() - rest.len() + token_len;
+                return Ok(Some(self.input_buffer.drain(..consumed).collect()));
+            }
+            self.input_buffer.clear();
+            if input.read_line(&mut self.input_buffer).map_err(io_err)? == 0 {
+                return Ok(None);
+            }
+        }
     }
 
     fn fp(&mut self, instruction: &Instruction) -> Result<()> {
@@ -863,6 +892,10 @@ impl Machine {
         }
         Ok(())
     }
+}
+
+fn io_err(e: std::io::Error) -> Error {
+    Error::new(e.to_string())
 }
 
 fn sign(value: u64, bits: u32) -> u64 {

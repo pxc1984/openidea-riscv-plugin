@@ -31,6 +31,13 @@ icon = "run"
 when = "editorLangId == riscv"
 
 [[contributes.commands]]
+id = "run-tests"
+title = "RISC-V: Run Tests in Directory"
+category = "RISC-V"
+icon = "run"
+when = "editorLangId == riscv"
+
+[[contributes.commands]]
 id = "rerun"
 title = "RISC-V: Rerun Last"
 category = "RISC-V"
@@ -50,8 +57,16 @@ menu = "editor.context"
 command = "run-at-caret"
 
 [[contributes.menus]]
+menu = "editor.context"
+command = "run-tests"
+
+[[contributes.menus]]
 menu = "editor.title"
 command = "run"
+
+[[contributes.menus]]
+menu = "editor.title"
+command = "run-tests"
 
 [[contributes.providers]]
 kinds = [

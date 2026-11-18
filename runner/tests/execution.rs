@@ -155,6 +155,88 @@ fn diagnostics_and_limits() {
     assert!(error.message.contains("read-only"));
 }
 
+/// Режим `--tests`: программа складывает два целых и печатает результат.
+const SUM_TWO: &str =
+    "main: li a7, 5\necall\nmv t0, a0\nli a7, 5\necall\nadd a0, a0, t0\nli a7, 1\necall\nli a7, 10\necall";
+
+/// Программа печатает каждое прочитанное целое, пока read int на EOF не вернёт -1.
+const READ_UNTIL_EOF: &str =
+    "main:\nloop: li a7, 5\necall\nli t0, -1\nbeq a0, t0, done\nli a7, 1\necall\nj loop\ndone: li a7, 10\necall";
+
+/// Создаёт уникальный временный каталог с файлами тестов и исходником программы.
+fn write_test_dir(name: &str, source: &str, tests: &[(&str, &str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("ide-riscv-{}-{name}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("prog.asm"), source).unwrap();
+    for (test, input, expected) in tests {
+        std::fs::write(dir.join(format!("{test}.dat")), input).unwrap();
+        std::fs::write(dir.join(format!("{test}.ans")), expected).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn eof_read_int_returns_minus_one() {
+    let source = "main: li a7, 5\necall\nli a7, 1\necall\nli a7, 10\necall";
+    assert_eq!(execute(source, None, &[]).1, "-1");
+}
+
+#[test]
+fn eof_read_float_and_double_return_minus_one() {
+    let float = "main: li a7, 6\necall\nli a7, 2\necall\nli a7, 10\necall";
+    assert_eq!(execute(float, None, &[]).1, "-1");
+    let double = "main: li a7, 7\necall\nli a7, 3\necall\nli a7, 10\necall";
+    assert_eq!(execute(double, None, &[]).1, "-1");
+}
+
+#[test]
+fn tests_mode_all_pass() {
+    let dir = write_test_dir("all-pass", SUM_TWO, &[("01", "1 2\n", "3\n"), ("02", "10\n-3\n", "7")]);
+    let (code, report) =
+        ide_riscv::run_test_suite(dir.join("prog.asm").to_str().unwrap(), dir.to_str().unwrap(), 10_000).unwrap();
+    assert_eq!(report, "PASS 01\nPASS 02\n2/2 tests passed\n");
+    assert_eq!(code, 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn tests_mode_reports_failure() {
+    let dir = write_test_dir("one-fail", SUM_TWO, &[("01", "1 2\n", "3\n"), ("02", "1 2\n", "5\n")]);
+    let (code, report) =
+        ide_riscv::run_test_suite(dir.join("prog.asm").to_str().unwrap(), dir.to_str().unwrap(), 10_000).unwrap();
+    assert!(report.contains("PASS 01\n"), "{report}");
+    assert!(report.contains("FAIL 02: line 1: expected '5', got '3'\n"), "{report}");
+    assert!(report.contains("1/2 tests passed\n"), "{report}");
+    assert_eq!(code, 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn tests_mode_eof_program() {
+    // Программа печатает числа без разделителей, поэтому эталон — "35".
+    let dir = write_test_dir("eof", READ_UNTIL_EOF, &[("01", "3\n5\n", "35\n")]);
+    let (code, report) =
+        ide_riscv::run_test_suite(dir.join("prog.asm").to_str().unwrap(), dir.to_str().unwrap(), 10_000).unwrap();
+    assert_eq!(report, "PASS 01\n1/1 tests passed\n");
+    assert_eq!(code, 0);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn cli_tests_flag_exit_codes() {
+    let pass_dir = write_test_dir("cli-pass", SUM_TWO, &[("01", "1 2\n", "3\n")]);
+    // cli запускается из произвольного cwd: путь к prog.asm делаем абсолютным.
+    let args = |dir: &std::path::Path| {
+        vec![dir.join("prog.asm").to_str().unwrap().to_owned(), "--tests".to_owned(), dir.to_str().unwrap().to_owned()]
+    };
+    assert_eq!(ide_riscv::cli(args(&pass_dir)), 0);
+    let fail_dir = write_test_dir("cli-fail", SUM_TWO, &[("01", "1 2\n", "9\n")]);
+    assert_eq!(ide_riscv::cli(args(&fail_dir)), 1);
+    assert_eq!(ide_riscv::cli(vec!["prog.asm".to_owned(), "--tests".to_owned()]), 2);
+    std::fs::remove_dir_all(&pass_dir).ok();
+    std::fs::remove_dir_all(&fail_dir).ok();
+}
+
 #[test]
 fn signed_expressions_and_relative_numeric_branches() {
     assert_eq!(execute("run: li a0, -8/2 + -7%3\nret", None, &[]).0.value, (-5i64) as u64);
