@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "openidea-plugin-openidea-riscv"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "ide-riscv",
  "openidea-plugin",

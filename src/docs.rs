@@ -32,8 +32,8 @@ zext.b|rd, rs|Zero-extend the low byte
 zext.h|rd, rs|Zero-extend the low 16 bits
 zext.w|rd, rs|Zero-extend the low 32 bits
 sll|rd, rs1, rs2|Shift left logical: rd = rs1 << rs2[5:0]
-srl|rd, rs1, rs2|Shift right logical: rd = rs1 >>u rs2[5:0]
-sra|rd, rs1, rs2|Shift right arithmetic: rd = rs1 >>s rs2[5:0]
+srl|rd, rs1, rs2|Shift right logical (unsigned, zero fill): rd = rs1 >>u rs2[5:0]
+sra|rd, rs1, rs2|Shift right arithmetic (signed, sign fill): rd = rs1 >>s rs2[5:0]
 slli|rd, rs1, shamt|rd = rs1 << shamt (0..63)
 srli|rd, rs1, shamt|rd = rs1 >>u shamt (0..63)
 srai|rd, rs1, shamt|rd = rs1 >>s shamt (0..63)
@@ -41,8 +41,8 @@ sllw|rd, rs1, rs2|32-bit shift left, sign-extended
 srlw|rd, rs1, rs2|32-bit logical shift right, sign-extended
 sraw|rd, rs1, rs2|32-bit arithmetic shift right, sign-extended
 slliw|rd, rs1, shamt|32-bit shift left by shamt (0..31), sign-extended
-srliw|rd, rs1, shamt|32-bit logical shift right by shamt (0..31), sign-extended
-sraiw|rd, rs1, shamt|32-bit arithmetic shift right by shamt (0..31), sign-extended
+srliw|rd, rs1, shamt|32-bit logical shift right (zero fill) by shamt (0..31), sign-extended
+sraiw|rd, rs1, shamt|32-bit arithmetic shift right (sign fill) by shamt (0..31), sign-extended
 and|rd, rs1, rs2|rd = rs1 & rs2
 or|rd, rs1, rs2|rd = rs1 | rs2
 xor|rd, rs1, rs2|rd = rs1 ^ rs2
@@ -53,30 +53,30 @@ not|rd, rs|rd = ~rs
 andn|rd, rs1, rs2|rd = rs1 & ~rs2 (Zbb)
 orn|rd, rs1, rs2|rd = rs1 | ~rs2 (Zbb)
 xnor|rd, rs1, rs2|rd = rs1 ^ ~rs2 (Zbb)
-slt|rd, rs1, rs2|rd = (rs1 <s rs2) ? 1 : 0
-sltu|rd, rs1, rs2|rd = (rs1 <u rs2) ? 1 : 0
-slti|rd, rs1, imm12|rd = (rs1 <s imm12) ? 1 : 0
-sltiu|rd, rs1, imm12|rd = (rs1 <u imm12) ? 1 : 0
-seqz|rd, rs|rd = (rs == 0) ? 1 : 0
-snez|rd, rs|rd = (rs != 0) ? 1 : 0
-sltz|rd, rs|rd = (rs < 0) ? 1 : 0
-sgtz|rd, rs|rd = (rs > 0) ? 1 : 0
-beq|rs1, rs2, label|Branch if rs1 == rs2
-bne|rs1, rs2, label|Branch if rs1 != rs2
-blt|rs1, rs2, label|Branch if rs1 <s rs2
-bge|rs1, rs2, label|Branch if rs1 >=s rs2
-bltu|rs1, rs2, label|Branch if rs1 <u rs2
-bgeu|rs1, rs2, label|Branch if rs1 >=u rs2
-bgt|rs1, rs2, label|Branch if rs1 >s rs2
-ble|rs1, rs2, label|Branch if rs1 <=s rs2
-bgtu|rs1, rs2, label|Branch if rs1 >u rs2
-bleu|rs1, rs2, label|Branch if rs1 <=u rs2
-beqz|rs, label|Branch if rs == 0
-bnez|rs, label|Branch if rs != 0
-blez|rs, label|Branch if rs <= 0
-bgez|rs, label|Branch if rs >= 0
-bltz|rs, label|Branch if rs < 0
-bgtz|rs, label|Branch if rs > 0
+slt|rd, rs1, rs2|Set if less than (signed): rd = (rs1 <s rs2) ? 1 : 0
+sltu|rd, rs1, rs2|Set if less than (unsigned): rd = (rs1 <u rs2) ? 1 : 0
+slti|rd, rs1, imm12|Set if less than immediate (signed): rd = (rs1 <s imm12) ? 1 : 0
+sltiu|rd, rs1, imm12|Set if less than immediate (unsigned): rd = (rs1 <u imm12) ? 1 : 0
+seqz|rd, rs|Set if equal to zero: rd = (rs == 0) ? 1 : 0
+snez|rd, rs|Set if not equal to zero: rd = (rs != 0) ? 1 : 0
+sltz|rd, rs|Set if less than zero: rd = (rs < 0) ? 1 : 0
+sgtz|rd, rs|Set if greater than zero: rd = (rs > 0) ? 1 : 0
+beq|rs1, rs2, label|Branch if equal: rs1 == rs2
+bne|rs1, rs2, label|Branch if not equal: rs1 != rs2
+blt|rs1, rs2, label|Branch if less than (signed): rs1 <s rs2
+bge|rs1, rs2, label|Branch if greater than or equal (signed): rs1 >=s rs2
+bltu|rs1, rs2, label|Branch if less than (unsigned): rs1 <u rs2
+bgeu|rs1, rs2, label|Branch if greater than or equal (unsigned): rs1 >=u rs2
+bgt|rs1, rs2, label|Branch if greater than (signed): rs1 >s rs2
+ble|rs1, rs2, label|Branch if less than or equal (signed): rs1 <=s rs2
+bgtu|rs1, rs2, label|Branch if greater than (unsigned): rs1 >u rs2
+bleu|rs1, rs2, label|Branch if less than or equal (unsigned): rs1 <=u rs2
+beqz|rs, label|Branch if equal to zero: rs == 0
+bnez|rs, label|Branch if not equal to zero: rs != 0
+blez|rs, label|Branch if less than or equal to zero: rs <= 0
+bgez|rs, label|Branch if greater than or equal to zero: rs >= 0
+bltz|rs, label|Branch if less than zero: rs < 0
+bgtz|rs, label|Branch if greater than zero: rs > 0
 lb|rd, offset(rs1)|Load signed byte
 lbu|rd, offset(rs1)|Load unsigned byte
 lh|rd, offset(rs1)|Load signed 16-bit halfword
